@@ -1,4 +1,6 @@
 """Generated-code lifecycle, preview/build and code editor."""
+from openpyxl.styles.builtins import accent_6
+
 from .dependencies import *
 from .config import *
 from .models import DesignElement
@@ -929,7 +931,7 @@ class CodeMixin:
             editor_frame.grid_columnconfigure(0, weight=1)
 
             text_widget = tk.Text(editor_frame, font=("Consolas", 10),
-                                   bg="white", fg="black", wrap=tk.NONE,
+                                   bg="#E0FFFF", fg="black", wrap=tk.NONE,
                                    undo=True, padx=8, pady=6
                                    )
             y_scroll = ttk.Scrollbar(editor_frame, orient=tk.VERTICAL,
@@ -1104,10 +1106,11 @@ class CodeMixin:
             self._flat_button(btn_frame, "💾 Save", save_code,
                               accent=True, side=tk.LEFT, padx=2)
             self._flat_button(btn_frame, "💻 Open in VS Code", open_in_vscode,
-                              side=tk.LEFT, padx=2)
+                              side=tk.LEFT, padx=2,accent=True)
+
             self._flat_button(btn_frame, "📦 Convert To EXE",
                               lambda: self._convert_to_exe(top, text_widget),
-                              side=tk.LEFT, padx=2)
+                              side=tk.LEFT, padx=50,accent=True)
             self._flat_button(btn_frame, "Close", top.destroy,
                               side=tk.RIGHT, padx=2)
             text_widget.bind("<KeyRelease>",
