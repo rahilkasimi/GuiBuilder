@@ -44,14 +44,21 @@ class DesignElement:
 
     @property
     def display_label(self) -> str:
+        """Return the complete text shown for the element on the design canvas.
+
+        The design canvas used to truncate text to 15 characters and append
+        an ellipsis.  That was only a presentation shortcut, but it changed
+        the actual on-canvas representation of the user's configured text
+        and made the designer disagree with the Run Preview.  Keep the full
+        value here; sizing/wrapping/clipping belongs to the renderer/widget
+        geometry, not to the model value itself.
+        """
         text_val = self.props.get("text")
         if text_val is not None:
-            label = str(text_val)
-        elif self.props.get("default_text") is not None:
-            label = str(self.props["default_text"])
-        else:
-            label = self.elem_type
-        return (label[:15] + "…") if len(label) > 15 else label
+            return str(text_val)
+        if self.props.get("default_text") is not None:
+            return str(self.props["default_text"])
+        return self.elem_type
 
     def contains_point(self, px: int, py: int) -> bool:
         top = self.y - 14 if self.elem_type == "LabelFrame" else self.y

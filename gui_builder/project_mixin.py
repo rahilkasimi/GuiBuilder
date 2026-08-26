@@ -16,6 +16,21 @@ class ProjectMixin:
             self._save_timer = self.root.after(delay_ms, self._save_state)
 
         def _save_state(self, clear_redo=True):
+            # ``full_code`` may have been updated incrementally (for example
+            # when a new Image/Calendar/Table element is added).  Before the
+            # design snapshot is serialized, make the persistent import block
+            # agree with the actual generated source.  This prevents a later
+            # full regeneration from rebuilding the project from stale
+            # ``canvas_imports`` and silently dropping user-added imports.
+            try:
+                if getattr(self, "full_code", None):
+                    self._sync_project_imports_from_code(self.full_code)
+            except Exception:
+                # Saving the design itself must remain fail-safe; the code
+                # synchronization is a consistency repair, not a reason to
+                # block persistence of the user's canvas.
+                pass
+
             state = {
                 "elements": [e.to_dict() for e in self.elements],
                 "next_id": self.next_id,
@@ -60,6 +75,16 @@ class ProjectMixin:
             self.full_code = data.get("full_code")
             self.custom_module_code = data.get("custom_module_code", "")
             self.custom_class_code = data.get("custom_class_code", "")
+
+            # Repair older designs that stored extra top-level imports only in
+            # ``full_code`` while ``canvas_imports`` contained just the base Tk
+            # imports.  The repair is non-destructive: it only adds imports that
+            # already exist in the saved source.
+            try:
+                if self.full_code:
+                    self._sync_project_imports_from_code(self.full_code)
+            except Exception:
+                pass
 
             self.canvas.config(width=self.CANVAS_W, height=self.CANVAS_H,
                                 bg=self.CANVAS_BG,

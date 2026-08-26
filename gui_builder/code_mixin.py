@@ -487,15 +487,78 @@ class CodeMixin:
                 if body is not None:
                     e.handler_code = body
 
+        def _extract_top_level_imports(self, lines: List[str]) -> List[str]:
+            """Return top-level import statements from the module header.
+
+            Imports are project-level source code and must survive a full code
+            regeneration.  Older versions only tracked the two built-in Tk
+            imports in ``canvas_imports`` and treated other imports as an
+            incidental part of ``custom_module_code``.  That made import
+            preservation dependent on where a user happened to place the
+            import relative to auto-managed imports.
+
+            ``ast`` gives us reliable statement boundaries, including
+            parenthesized/multi-line imports.  When the edited code is not
+            parseable (the editor explicitly allows saving with syntax errors),
+            a conservative line-based fallback preserves ordinary one-line
+            imports rather than deleting them.
+            """
+            source = "\n".join(lines)
+            try:
+                tree = ast.parse(source)
+                imports = []
+                for node in tree.body:
+                    if isinstance(node, (ast.Import, ast.ImportFrom)):
+                        start = node.lineno - 1
+                        end = getattr(node, "end_lineno", node.lineno)
+                        statement = "\n".join(lines[start:end]).strip()
+                        if statement:
+                            imports.append(statement)
+                return imports
+            except (SyntaxError, ValueError, TypeError):
+                return [
+                    line.strip()
+                    for line in lines
+                    if line.strip().startswith(("import ", "from "))
+                    and not line.startswith((" ", "\t"))
+                ]
+
+        def _sync_project_imports_from_code(self, code: Optional[str] = None) -> None:
+            """Synchronize the persistent project-import block with source code.
+
+            ``full_code`` is the authoritative source while the code editor is
+            open.  Keeping all top-level imports in ``canvas_imports`` makes
+            subsequent full regenerations deterministic, regardless of whether
+            the preceding operation was an element add, delete, property edit,
+            undo/redo, preview, or another regeneration trigger.
+            """
+            source = self.full_code if code is None else code
+            if not source:
+                return
+
+            lines = source.splitlines()
+            imports = self._extract_top_level_imports(lines)
+            if not imports:
+                return
+
+            # Preserve the order in which imports appear in the source while
+            # collapsing exact duplicates.  This also repairs older .tvd files
+            # whose canvas_imports field was incomplete.
+            deduped = []
+            seen = set()
+            for imp in imports:
+                if imp not in seen:
+                    seen.add(imp)
+                    deduped.append(imp)
+            self.canvas_imports = "\n".join(deduped)
+
         def _extract_custom_regions(self, lines: List[str]) -> Tuple[str, str]:
-            """Pull out code the user typed into the code editor that isn't
-            part of the recognized boilerplate: module-level code between the
-            theme setup and the class (constants, dicts, extra imports,
-            standalone functions), and any class method whose name doesn't
-            match __init__ or _on_<ElemType>_<id> (extra helper methods).
-            Stored separately in self.custom_module_code/custom_class_code so
-            a later full regenerate (adding an element, undo/redo, etc.)
-            doesn't silently discard it -- see CodeGenerator.generate().
+            """Extract non-boilerplate user code while keeping imports durable.
+
+            All module-level imports are removed from ``custom_module_code``
+            and are persisted in ``canvas_imports`` instead.  This removes the
+            old positional dependency where a custom import could disappear if
+            another auto-managed import was added after it.
             """
             module_code = ""
             class_code = ""
@@ -503,57 +566,54 @@ class CodeMixin:
             class_idx = next(
                 (i for i, l in enumerate(lines)
                  if l.startswith("class MainApplication:")), None
-                )
-            # Anchor the start of "module-level custom code" right after the
-            # last recognized *auto-managed* header import line, rather than
-            # requiring one fixed, specific line to still be present
-            # verbatim. Those import lines -- like the rest of the header --
-            # are boilerplate the user can freely remove/edit; requiring a
-            # fixed anchor meant any edit to the header (or simply never
-            # having generated it, e.g. an older/hand-written script)
-            # silently dropped every bit of custom module-level code (extra
-            # imports, constants, standalone functions) with no error or
-            # warning. Only the specific lines CodeGenerator.generate()
-            # itself always (re)emits are treated as "boilerplate" here and
-            # skipped -- anything else, including a genuinely custom import
-            # like "import math", is left in the captured region so it isn't
-            # mistaken for boilerplate and silently discarded the same way.
-            _KNOWN_HEADER_IMPORTS = {
-                "import tkinter as tk", "from tkinter import ttk",
-                "import os", "from PIL import Image, ImageTk",
-                "import pandas as pd",
-                "from tkcalendar import Calendar",
-                "from datetime import date", "import platform",
-                }
-            header_idx = None
-            for i, l in enumerate(lines):
-                if class_idx is not None and i >= class_idx:
-                    break
-                if l in _KNOWN_HEADER_IMPORTS:
-                    header_idx = i
+            )
+
             if class_idx is not None:
-                region_start = header_idx + 1 if header_idx is not None else 0
-                region = lines[region_start:class_idx]
-                # Exclude the auto-managed tooltip helper class so it isn't
-                # captured as "custom" and then duplicated by generate().
+                module_region = list(lines[:class_idx])
+
+                # The generated docstring is boilerplate, not user module code.
+                if module_region and module_region[0].startswith('"""Generated by Tkinter Visual Designer."""'):
+                    module_region = module_region[1:]
+
+                # Remove all top-level import statements, regardless of their
+                # position.  Keep comments/blank lines and all other module code.
+                try:
+                    region_source = "\n".join(module_region)
+                    tree = ast.parse(region_source)
+                    remove_ranges = []
+                    for node in tree.body:
+                        if isinstance(node, (ast.Import, ast.ImportFrom)):
+                            remove_ranges.append((node.lineno - 1, getattr(node, "end_lineno", node.lineno)))
+                    for start_line, end_line in reversed(remove_ranges):
+                        del module_region[start_line:end_line]
+                except (SyntaxError, ValueError, TypeError):
+                    # Syntax-error saves are allowed.  In that case remove only
+                    # ordinary, unindented one-line imports.
+                    module_region = [
+                        line for line in module_region
+                        if not (line.startswith(("import ", "from ")) and line.strip())
+                    ]
+
+                # Exclude the auto-generated tooltip helper if present.
                 tt_start = next(
-                    (i for i, l in enumerate(region)
+                    (i for i, l in enumerate(module_region)
                      if l.startswith("class _ToolTip:")), None
-                    )
+                )
                 if tt_start is not None:
                     tt_end = tt_start + 1
-                    while tt_end < len(region) and (
-                            region[tt_end].startswith((" ", "\t"))
-                            or not region[tt_end].strip()
-                            ):
+                    while tt_end < len(module_region) and (
+                            module_region[tt_end].startswith((" ", "\t"))
+                            or not module_region[tt_end].strip()
+                    ):
                         tt_end += 1
-                    region = region[:tt_start] + region[tt_end:]
-                module_code = "\n".join(region).strip("\n")
+                    module_region[tt_start:tt_end] = []
+
+                module_code = "\n".join(module_region).strip("\n")
 
             main_guard_idx = next(
                 (i for i, l in enumerate(lines) if l.startswith("if __name__")),
                 len(lines)
-                )
+            )
             if class_idx is not None:
                 class_region = lines[class_idx + 1:main_guard_idx]
                 recognized_re = re.compile(r'^    def (__init__|_on_\w+_\d+)\(')
@@ -992,6 +1052,11 @@ class CodeMixin:
                     text_widget.insert("1.0", edited_code)
                 self.full_code = edited_code
                 lines = edited_code.splitlines()
+                # Capture every top-level import before any future full
+                # regeneration.  This is intentionally done on every code save
+                # so legacy designs and imports added anywhere in the header are
+                # repaired into a stable project-level import block.
+                self._sync_project_imports_from_code(edited_code)
                 if elem is not None:
                     body = self._extract_method_body(lines, method_name)
                     if body is not None:
