@@ -1,560 +1,330 @@
-# Tkinter Visual GUI Designer
+# 🧰 GuiBuilder — Tkinter Visual GUI Designer
 
-> A visual drag-and-drop GUI builder for Python/Tkinter applications that lets you design interfaces on a canvas, edit widget properties live, generate runnable Python source, preview the result, and package it as an executable — without hand-writing every geometry call yourself.
+> **Drag it. Drop it. Ship it.** A visual, drag-and-drop GUI builder for Python/Tkinter that turns "I need a desktop app" into a finished, runnable `.py` file — without you personally negotiating with `.grid()`, `.pack()`, and `.place()` at 1 a.m.
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-[![Tkinter](https://img.shields.io/badge/GUI-Tkinter%20%2F%20ttk-informational.svg)](https://docs.python.org/3/library/tkinter.html)
-[![Architecture](https://img.shields.io/badge/Architecture-SRP%20Modular-success.svg)](#architecture)
-[![License](https://img.shields.io/badge/License-TBD-lightgrey.svg)](#license)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![GUI](https://img.shields.io/badge/GUI-Tkinter%20%2F%20ttk-informational)](https://docs.python.org/3/library/tkinter.html)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#prerequisites-and-system-requirements)
+[![Architecture](https://img.shields.io/badge/Architecture-SRP%20Modular-success)](#architecture)
+[![Build EXE](https://img.shields.io/badge/Packaging-PyInstaller-orange)](#preview-and-exe-packaging)
+[![Status](https://img.shields.io/badge/Status-Actively%20Developed-brightgreen)](#project-status)
+[![PRs](https://img.shields.io/badge/PRs-Welcome-blueviolet)](#contributing)
+[![License](https://img.shields.io/badge/License-TBD-lightgrey)](#license)
 
-## Overview
+---
 
-**Tkinter Visual GUI Designer** is a desktop visual development environment for building Python GUI applications with Tkinter and ttk.
+## What is this thing?
 
-Instead of starting with a blank Python file and wondering whether `grid()` should happen before or after the third callback, you design the interface visually. The builder stores the design as structured project data, renders it on its canvas, exposes editable properties, and converts the design into Python source code.
+**GuiBuilder** is a desktop visual development environment for building real Python desktop applications with **Tkinter** and **ttk** — the GUI toolkit that ships with Python itself, no exotic dependencies required to *run* your finished app.
 
-The project is deliberately built around a **Single Responsibility Principle (SRP) modular architecture**. The original monolithic application was split into focused modules for canvas interaction, rendering, properties, persistence, code generation, code editing, and application UI while retaining the same application-level `GUIBuilderApp` composition root.
+Instead of starting from a blank `.py` file and immediately arguing with yourself about whether `grid()` should happen before or after the third callback, you **design the interface visually**: drag widgets onto a canvas, tweak their properties in a live inspector, and watch GuiBuilder write clean, readable Python source code for you in real time. When you're happy, hit **Run Preview** to see it live, or **Convert To EXE** to hand your grandmother a double-clickable Windows application.
 
-### Elevator pitch
+The best part? You are never locked into a proprietary format. Every design compiles down to plain, editable, "a human wrote this" Python — because the moment a code generator starts hiding logic from you in a `.dll` somewhere, it stops being a tool and starts being a hostage situation.
 
-**Design visually → configure properties → generate Python → preview → edit code → build an EXE.**
+### The elevator pitch
 
-The builder targets developers who want a faster way to prototype desktop interfaces while still retaining access to the generated Python source rather than being trapped inside a proprietary project format.
+```
+Design visually → Configure properties → Generate Python → Preview live → Edit code freely → Build an .exe
+```
+
+GuiBuilder targets developers, engineers, and hobbyists who want a **faster path to a working desktop UI** while keeping full ownership of the generated source — rather than being trapped inside a `.builderfile` that only one piece of software on Earth can open.
+
+### Why it exists (the honest version)
+
+Tkinter is fantastic, fast, and ships free with every Python install. It is also mildly hostile to actually *laying things out*, especially once your form grows past six widgets and you start doing geometry math in your head like it's 1997. GuiBuilder handles the tedious, error-prone plumbing — positioning, sizing, styling, event wiring, packaging — so you can spend your time on the part that actually matters: what your application *does*.
+
+---
+
+## 📸 See it in action
+
+**The designer itself** — toolbox on the left, live canvas in the middle, property inspector on the right:
+
+![GuiBuilder — all elements placed on the design canvas](Sample%20Images/All%20Elements.png)
+
+**A real application generated by GuiBuilder**, running as a standalone window — this is a production form-automation tool built entirely by dragging, dropping, and configuring properties:
+
+![Example application generated from a GuiBuilder design](Sample%20Images/Multiple_Widgets.png)
+
+No Photoshop. No mockup tool. That second screenshot is a `.py` file GuiBuilder wrote.
 
 ---
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Feature Highlights](#feature-highlights)
-- [Complete Feature List](#complete-feature-list)
-- [Supported Widgets](#supported-widgets)
+- [What is this thing?](#what-is-this-thing)
+- [See it in action](#-see-it-in-action)
+- [Features](#-features)
+  - [1. The Visual Design Canvas](#1-the-visual-design-canvas)
+  - [2. The Widget Toolbox (28 elements)](#2-the-widget-toolbox-28-elements)
+  - [3. Instrumentation & Control-Panel Widgets](#3-instrumentation--control-panel-widgets)
+  - [4. Containers & Layout Hierarchy](#4-containers--layout-hierarchy)
+  - [5. Selection, Grouping & Movement](#5-selection-grouping--movement)
+  - [6. The Property Inspector](#6-the-property-inspector)
+  - [7. Code Generation](#7-code-generation)
+  - [8. The Live Code Editor](#8-the-live-code-editor)
+  - [9. Undo / Redo & Persistence](#9-undo--redo--persistence)
+  - [10. Preview and EXE Packaging](#10-preview-and-exe-packaging)
+  - [11. Images, Tables & Calendars](#11-images-tables--calendars)
 - [Architecture](#architecture)
-- [Visual Documentation](#visual-documentation)
-- [Installation and Setup](#installation-and-setup)
-- [Running the Application](#running-the-application)
-- [Basic Workflow](#basic-workflow)
-- [Usage Examples](#usage-examples)
-- [Project Files and Persistence](#project-files-and-persistence)
-- [Code Generation](#code-generation)
-- [Live Code Editing](#live-code-editing)
-- [Preview and EXE Conversion](#preview-and-exe-conversion)
-- [Selection and Container Workflow](#selection-and-container-workflow)
-- [Property Inspector](#property-inspector)
-- [Recent Reliability Fixes](#recent-reliability-fixes)
-- [Architecture Details](#architecture-details)
-- [Troubleshooting](#troubleshooting)
-- [Performance and Design Notes](#performance-and-design-notes)
+- [Prerequisites and System Requirements](#prerequisites-and-system-requirements)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Running the Application](#running-the-application)
+  - [Basic Workflow](#basic-workflow)
+  - [Worked Example: A Login Form](#worked-example-a-login-form)
+  - [What Generated Code Looks Like](#what-generated-code-looks-like)
+- [Keyboard Shortcuts](#keyboard-shortcuts)
+- [Configuration Options](#configuration-options)
+- [Key Functions](#key-functions)
+- [Sample Projects](#sample-projects)
 - [Contributing](#contributing)
+- [Troubleshooting](#troubleshooting)
+- [Roadmap](#roadmap)
 - [License](#license)
-- [Support](#support)
+- [Support & Contact](#support--contact)
+- [Credits & Technology Stack](#credits--technology-stack)
 
 ---
 
-## Feature Highlights
+## ✨ Features
 
-| Area | What it provides |
+At a glance:
+
+| Area | What it gives you |
 |---|---|
-| Visual Designer | Place, select, move, resize, and configure GUI elements on a design canvas. |
-| Widget Toolbox | Input, display, container, table, image, and calendar controls. |
-| Hierarchical Layout | Containers can own child elements and Notebook tabs can act as design scopes. |
-| Property Inspector | Live editing of widget properties, geometry, colors, fonts, values, tabs, and other supported settings. |
-| Multi-Selection | Select and manipulate multiple elements together. |
-| Scoped Selection | Container-aware `Ctrl+Shift+A` and right-drag marquee selection. |
-| Grid / Geometry | Canvas sizing, grid snapping, direct width/height properties, and drag/resize handles. |
-| Persistence | Save and load `.tvd` design files. |
-| Undo / Redo | Project-state history for safe experimentation. |
-| Code Generation | Generate Python source from the current visual design. |
-| Live Code | Keep generated source synchronized with the visual design. |
-| Code Editor | Edit generated code and element handler code directly. |
-| Syntax Checking | AST-based Python syntax validation in the code editor. |
-| Preview | Execute the generated application in a temporary environment. |
-| EXE Packaging | Build a Windows executable through PyInstaller. |
-| Resource Management | Copy selected images into the project's `resources/` directory and preserve relative paths. |
-| Table Support | Work with Excel/CSV-oriented table widgets. |
-| Calendar Support | Calendar widget support through `tkcalendar`. |
-| Tooltips | Widget tooltip support in generated applications. |
-| SRP Architecture | Focused modules that make future maintenance less hazardous than one giant Python file. |
-
----
-
-## Complete Feature List
-
-### 1. Visual Design Canvas
-
-- Visual canvas for assembling a desktop GUI.
-- Grid-based design surface.
-- Element placement using toolbox selection and canvas interaction.
-- Element hit-testing.
-- Element dragging and repositioning.
-- Element resizing through canvas resize handles.
-- Geometry synchronization between the canvas and property inspector.
-- Canvas width, height, and background configuration.
-- Automatic canvas redraw after state changes.
-- Visibility-aware rendering.
-- Element layering / ordering management.
-- Status-bar feedback for design operations.
-
-### 2. Widget Toolbox
-
-The builder currently includes the following design elements:
-
-- Label
-- Entry
-- Button
-- Radiobutton
-- Checkbutton
-- Scale / Slider
-- Combobox
-- Spinbox
-- Listbox
-- Multiline Text
-- Canvas
-- Progressbar
-- Scrollbar
-- Frame
-- LabelFrame
-- Notebook with tabs
-- PanedWindow
-- Separator
-- Table / Treeview
-- Image
-- Calendar
-
-The internal widget catalogue maps each visual element to a real Tkinter or ttk widget class used by the code generator.
-
-### 3. Containers and Hierarchy
-
-Container-aware design is a core part of the project.
-
-Supported containers include:
-
-- `Frame`
-- `LabelFrame`
-- `PanedWindow`
-- `Notebook`
-
-The project model stores parent relationships so nested controls can be rendered, selected, moved, serialized, and regenerated into the appropriate widget hierarchy.
-
-Notebook designs additionally support:
-
-- Multiple tab names.
-- Adding tabs.
-- Removing tabs.
-- Active-tab selection.
-- Child elements placed within Notebook tab containers.
-
-### 4. Element Selection
-
-Selection supports both individual and multi-element workflows.
-
-- Single-click element selection.
-- Multi-selection with modifier keys.
-- Legacy root-level `Ctrl+A` behavior.
-- Container-scoped `Ctrl+Shift+A`.
-- Right-button drag marquee selection.
-- Scoped marquee selection based on the active container context.
-- Selection highlighting.
-- Multi-element property panel support.
-- Protection of native text-widget `Ctrl+A`, copy, and paste behavior in text-entry controls and the code editor.
-
-The result is a small but important distinction: **“select everything” and “select everything in this container” are no longer the same operation.** Your nested frame no longer gets dragged into a selection brawl with the rest of the application.
-
-### 5. Movement and Geometry
-
-- Drag elements around the canvas.
-- Move multiple selected elements as a group.
-- Group movement constrained to the canvas bounds.
-- Arrow-key style geometry operations where supported by the existing application workflow.
-- Resize elements with handles.
-- Width and height reflected in the property inspector.
-- Grid snapping support.
-- Parent-aware movement rules.
-- Notebook-aware positioning.
-
-### 6. Property Inspector
-
-Properties are edited from the right-side/property-panel workflow and are applied live where supported.
-
-Examples include:
-
-- Text content.
-- Fonts.
-- Foreground/background colors.
-- Alignment / justification.
-- Width and height.
-- Orientation.
-- Numeric ranges such as Scale and Spinbox values.
-- Default values.
-- Combobox state.
-- Listbox selection mode.
-- Sorting flags where supported.
-- Notebook tabs and active tab.
-- Image source and scaling options.
-- Calendar configuration.
-- Tooltip text.
-- Widget-specific options.
-- Parent/container information.
-
-The property system distinguishes between ordinary widget constructor properties and builder-specific properties that require dedicated handling.
-
-### 7. Listbox and Combobox Item Editing
-
-Listbox and Combobox collections no longer rely on a raw string representation such as:
-
-```python
-['Item 1', 'Item 2', 'Item 3']
-```
-
-Instead, the property inspector provides a dedicated item editor that lets you:
-
-- Select an individual entry.
-- Add an entry.
-- Remove an entry.
-- Preserve the collection as structured element data.
-- Feed the resulting collection into generated Python code.
-
-This is considerably nicer than editing a Python list while pretending it is a user interface.
-
-### 8. Border Width Handling
-
-Border width is handled according to the widget toolkit in use.
-
-- Tk widgets use the native Tk border configuration.
-- `ttk.Combobox` uses a dedicated ttk style rather than receiving unsupported Tk constructor options.
-- `ttk.Notebook` uses dedicated ttk styling rather than an invalid `bd`/`borderwidth` constructor argument.
-
-This prevents unsupported-option crashes while retaining the intended visual property behavior.
-
-### 9. Spinbox Default Values
-
-The Spinbox generator explicitly resets the widget's current value before inserting the configured default value.
-
-This prevents the old behavior where a default such as `5` could effectively become `05` because the widget started with its native `0` and the generated code appended rather than replaced the initial contents.
-
-### 10. Code Generation
-
-The code generator converts the design model into executable Python source using plain Tkinter / ttk.
-
-Capabilities include:
-
-- Automatic imports.
-- Widget construction.
-- Parent hierarchy reconstruction.
-- Geometry placement.
-- Property propagation.
-- Notebook tab creation.
-- Listbox item insertion.
-- Combobox value generation.
-- Spinbox initialization.
-- Table setup.
-- Image handling.
-- Calendar setup.
-- Widget event/handler generation.
-- Visibility support.
-- Window-state handling.
-- Tooltip helper generation.
-- Custom module-level code preservation.
-- Custom class-level code preservation.
-- Element handler-code preservation.
-
-### 11. Live Code Generation
-
-The generated source can be refreshed as the design changes.
-
-The application maintains generated code as part of the design state while protecting custom code regions from accidental regeneration loss.
-
-Relevant workflows include:
-
-- Full regeneration.
-- Incremental insertion for newly added elements.
-- Code display synchronization.
-- Handler-code synchronization.
-- Preservation of user-authored custom code.
-- Required-import reconciliation.
-
-### 12. Code Editor
-
-The integrated code editor provides:
-
-- Full generated-source editing.
-- Per-element handler editing.
-- Save action.
-- `Ctrl+S` shortcut.
-- Syntax validation.
-- Error highlighting.
-- Line/column reporting.
-- Code synchronization back into the visual project where supported.
-- Opening the generated code in VS Code.
-
-### 13. Syntax Checking
-
-The code editor uses Python's AST parser to validate syntax.
-
-The workflow identifies:
-
-- Syntax error message.
-- Error line.
-- Error column.
-- The problematic source region.
-
-Saving code containing a syntax error can be intercepted by the editor workflow rather than silently handing broken source to the next stage.
-
-### 14. Project Persistence
-
-Designs can be stored as `.tvd` files.
-
-Persisted project state includes, among other data:
-
-- Elements.
-- Element properties.
-- IDs and reusable IDs.
-- Window title.
-- Canvas dimensions.
-- Canvas background.
-- Window state.
-- Imports.
-- Generated full code.
-- Custom module-level code.
-- Custom class-level code.
-
-Loading a project reconstructs the model, canvas, property state, and generated source.
-
-### 15. Undo / Redo
-
-The builder maintains undo and redo stacks using serialized project-state snapshots.
-
-To avoid filling history with every single keystroke while a property is being edited, frequent updates can be debounced before creating the next undo-state snapshot.
-
-### 16. Preview
-
-The **Run Preview** workflow:
-
-1. Generates the current application source.
-2. Stages the application in a temporary directory.
-3. Copies required resources where applicable.
-4. Checks required dependencies.
-5. Runs the generated script.
-6. Monitors the preview process.
-7. Reports runtime failures back to the builder.
-
-### 17. Windows EXE Conversion
-
-The **Convert To EXE** workflow integrates PyInstaller to package the generated application.
-
-The build workflow stages a clean application directory, runs PyInstaller, tracks the build output, and copies the resulting executable to the requested destination.
-
-### 18. Resource and Image Handling
-
-Image-based elements can:
-
-- Select an image file.
-- Copy project resources into the builder's `resources/` directory.
-- Preserve paths relative to the project/application location.
-- Keep aspect ratio where configured.
-- Resolve resources without depending on the process's current working directory.
-
-Using a project-root anchor rather than `os.getcwd()` avoids one particularly entertaining class of bugs: a file picker changes the working directory, and suddenly your image disappears because the application has decided the current folder has become part of the data model.
-
-### 19. Tables and Excel/CSV Workflows
-
-The project contains a Table / Treeview element with configuration for external tabular sources.
-
-The dependency list includes `pandas` and `openpyxl`, providing the foundation for Excel/CSV-oriented table workflows.
-
-### 20. Calendar Support
-
-The Calendar element integrates with `tkcalendar`.
-
-Generated applications can use calendar selection events where supported by the project's event mapping.
-
-### 21. Tooltip Support
-
-Generated applications can include a lightweight tooltip helper that displays text when the pointer enters a widget and removes it when the pointer leaves.
-
-### 22. Plain Tkinter / ttk Runtime
-
-The current architecture and generator use **plain Tkinter / ttk** rather than CustomTkinter.
-
-Consequences:
-
-- No `customtkinter` dependency is required.
-- Generated applications use standard Python Tk libraries.
-- PyInstaller packaging no longer needs a CustomTkinter-specific `--collect-all customtkinter` flag.
-- Widget property names are closer to the real Tkinter/ttk API.
-
----
-
-## Supported Widgets
-
-The current `ELEMENT_TYPES` catalogue contains the following elements:
-
-| Category | Element | Runtime class |
+| Visual Designer | Place, select, move, resize, and configure GUI elements on a live canvas |
+| Widget Toolbox | 28 elements across Input, Instrumentation, Containers, and Display categories |
+| Hierarchical Layout | Nest widgets inside Frames, LabelFrames, PanedWindows, and Notebook tabs |
+| Property Inspector | Live editing of text, fonts, colors, geometry, values, and widget-specific options |
+| Scoped Selection | `Ctrl+A` for everything, `Ctrl+Shift+A` for "everything in *this* container" |
+| Grouping | Assign elements a Group ID so they move together without becoming a hidden Frame |
+| Undo / Redo | Full project-state history, debounced so you don't get 40 undo steps from one drag |
+| Code Generation | Converts your design into plain, readable `tkinter` / `ttk` source — no hidden runtime |
+| Live Code Sync | Generated code updates as you design, while your custom edits are preserved |
+| Syntax Checking | AST-based validation in the built-in code editor, before you save something broken |
+| Run Preview | Executes the generated app in an isolated process, with dependency auto-detection |
+| EXE Packaging | One-click Windows executable via PyInstaller, including missing-package installs |
+| Instrumentation Widgets | LEDs, gauges, mechanical push buttons — dashboard-style controls, batteries included |
+| Resource Management | Images get copied into a project-relative `resources/` folder — no more "works on my machine" |
+| In-App Help | A built-in help panel and hover tooltips for context, so you're never flying blind |
+
+Now, the detailed tour.
+
+### 1. The Visual Design Canvas
+
+The canvas is a grid-snapped surface where your application literally takes shape:
+
+- Click a toolbox tool, click the canvas, and an element appears at that spot.
+- Click-drag to reposition; drag the corner/edge handles to resize.
+- A small red **✕** appears near each selected element for one-click deletion — the closest thing to a "make it disappear" button that doesn't involve `rm -rf`.
+- The canvas redraws automatically after every state change, so what you see is always what you'd get.
+- Elements marked *not visible* (see [Property Inspector](#6-the-property-inspector)) are still shown on the design canvas with a dashed outline and a **HIDDEN** badge — because a widget vanishing from the *design surface itself* would make it un-editable, which defeats the purpose of a visual editor.
+
+### 2. The Widget Toolbox (28 elements)
+
+Every element you place maps directly to a real Tkinter/ttk widget class (or a small custom widget for the instrumentation set below) — there is no proprietary intermediate widget system to reverse-engineer later.
+
+| Category | Element | Runtime Class |
 |---|---|---|
-| Input | Label | `tk.Label` |
-| Input | Entry | `tk.Entry` |
-| Input | Button | `tk.Button` |
-| Input | Radiobutton | `tk.Radiobutton` |
-| Input | Checkbutton | `tk.Checkbutton` |
-| Input | Scale | `tk.Scale` |
-| Input | Combobox | `ttk.Combobox` |
-| Input | Spinbox | `tk.Spinbox` |
-| Input | Listbox | `tk.Listbox` |
-| Input | Text | `tk.Text` |
-| Display | Canvas | `tk.Canvas` |
-| Input | Progressbar | `ttk.Progressbar` |
-| Display | Scrollbar | `tk.Scrollbar` |
-| Containers | Frame | `tk.Frame` |
-| Containers | LabelFrame | `tk.LabelFrame` |
-| Containers | Notebook | `ttk.Notebook` |
-| Containers | PanedWindow | `tk.PanedWindow` |
-| Display | Separator | `ttk.Separator` |
-| Display | Table | `ttk.Treeview` |
-| Display | Image | `tk.Label` |
-| Display | Calendar | `Calendar` from `tkcalendar` |
+| Input | 🏷️ Label | `tk.Label` |
+| Input | ✍️ Entry | `tk.Entry` |
+| Input | 🔘 Button | `tk.Button` |
+| Input | ◉ Radiobutton | `tk.Radiobutton` |
+| Input | ☑ Checkbutton | `tk.Checkbutton` |
+| Input | 🎚️ Scale (Slider) | `tk.Scale` |
+| Input | 🔽 Combobox | `ttk.Combobox` |
+| Input | 🔢 Spinbox | `tk.Spinbox` |
+| Input | 📋 Listbox | `tk.Listbox` |
+| Input | 📝 Text (Multiline) | `tk.Text` |
+| Input | ⏳ Progressbar | `ttk.Progressbar` |
+| Display | 🎨 Canvas (Drawing) | `tk.Canvas` |
+| Display | ↕️ Scrollbar | `tk.Scrollbar` |
+| Display | ➖ Separator | `ttk.Separator` |
+| Display | 📊 Table (Excel/CSV) | `ttk.Treeview` |
+| Display | 🖼️ Image | `tk.Label` |
+| Display | 📅 Calendar | `Calendar` (`tkcalendar`) |
+| Containers | 🖼️ Frame | `tk.Frame` |
+| Containers | 🗂️ LabelFrame | `tk.LabelFrame` |
+| Containers | 📑 Notebook (Tabs) | `ttk.Notebook` |
+| Containers | 🪟 PanedWindow | `tk.PanedWindow` |
+| Instrumentation | 🔘 Push Button | `BuilderPushButton` |
+| Instrumentation | ◉ Radio Option | `BuilderRadioButton` |
+| Instrumentation | 🔢 LED Digit | `BuilderLEDDisplay` |
+| Instrumentation | 🔢 LED Display | `BuilderLEDDisplay` |
+| Instrumentation | 💡 LED Indicator | `BuilderLEDIndicator` |
+| Instrumentation | ⏱️ Gauge / Meter | `BuilderGauge` |
+| Instrumentation | 📟 Measurement Display | `BuilderMeasurementDisplay` |
 
-The list is defined in `gui_builder/config.py`, so extending the designer with additional widget types is intended to be a controlled configuration-plus-rendering/code-generation exercise rather than a hunt through one 5,000-line script.
+The entire catalogue lives in one place — `gui_builder/config.py`'s `ELEMENT_TYPES` dictionary — so adding a 29th widget type is a controlled configuration-plus-rendering exercise, not a scavenger hunt through a single 5,000-line file.
+
+### 3. Instrumentation & Control-Panel Widgets
+
+Beyond standard form controls, GuiBuilder ships a family of dashboard-style widgets aimed at lab equipment, machine control panels, and test-bench UIs — because not every application in the world is a login form:
+
+| Widget | Purpose | Key Properties |
+|---|---|---|
+| **Push Button** | Mechanical/control-panel style button | Text, Shape, Style, Behavior (Momentary/Toggle), Default State, colors, Command |
+| **Radio Option** | Custom-styled grouped selector | Text, Variable, Value, Shape, Selected state, colors |
+| **LED Digit** | A single glowing seven-segment digit | Digit Value, LED Color, Off-Segment Color, Brightness, Glow, Segment Width |
+| **LED Display** | Multi-digit seven-segment readout | Value, Digit Count, Leading Zeros, colors, Digit Gap, Brightness, Glow |
+| **LED Indicator** | Boolean status lamp | State, On/Off Color, Shape, Brightness, Glow, Source Widget, Source Mode |
+| **Gauge / Meter** | Analog-style radial meter | Value, Min/Max, sweep angles, needle/arc/track/tick colors, unit label |
+| **Measurement Display** | Value + unit readout | Label, Value, Unit, Modern/LED style, decimal places, prefix/suffix, secondary text |
+
+**The genuinely clever part:** an **LED Indicator** can optionally *bind* to another control — a Push Button, Radio Option, Checkbutton, or Button — via its **Source Widget** property, so the lamp lights up automatically based on that control's state. Three source modes are supported:
+
+- **Mirror** — the LED follows the source widget's current state exactly.
+- **Toggle** — the LED flips each time the source is activated.
+- **Momentary** — the LED is lit only while the source is actively being interacted with.
+
+This binding is stored by the source element's *stable ID*, not its visible caption — so renaming a button's label doesn't quietly break your indicator lamp three weeks later.
+
+**Runtime independence:** the instrumentation widget code (`gui_builder/instrumentation_widgets.py`) is embedded directly into the generated application when needed. Your exported app never has to `import gui_builder` just to render a blinking LED — it's fully self-contained.
+
+### 4. Containers & Layout Hierarchy
+
+Real applications are nested, and GuiBuilder treats container-aware design as a first-class citizen, not an afterthought:
+
+- **Frame**, **LabelFrame**, **PanedWindow**, and **Notebook** can all own child elements.
+- Drop a Button inside a Frame, then drag the Frame — the Button comes along for the ride.
+- **Notebook** tabs act as their own design scopes: add tabs, remove tabs, pick the active tab, and place different children inside each one.
+- Parent relationships are stored in the model itself, so save/load, undo/redo, and code generation all reconstruct the exact same widget tree every time.
+
+### 5. Selection, Grouping & Movement
+
+- **Single-click** selects one element; modifier-click extends the selection.
+- **`Ctrl+A`** selects everything at the root level (classic, global).
+- **`Ctrl+Shift+A`** selects everything *inside the current container context* — so nesting a Frame inside your design no longer means "select all" accidentally drags your carefully arranged sub-panel into a selection free-for-all with the rest of the app.
+- **Right-click-drag** draws a marquee selection box, scoped to whichever container you're currently working inside.
+- **Grouping** (via the right-click context menu) assigns a stable Group ID to a set of elements so they can be selected and moved together — without silently wrapping them in a hidden runtime Frame that shows up as a mystery indent in your generated code.
+- Text-entry widgets (and the code editor) keep their **native** `Ctrl+A` / copy / paste behavior — the scoped-selection shortcut never hijacks your ability to select all the text in an Entry box.
+
+### 6. The Property Inspector
+
+The right-hand panel is where a placed element becomes *your* element. Depending on the widget type, you can live-edit:
+
+- Text content, fonts, foreground/background colors, alignment/justification
+- Width, height, and other geometry values (kept in sync with on-canvas dragging)
+- Widget-specific settings — orientation, numeric ranges (Scale/Spinbox), Combobox/Listbox state
+- **Item collections** for Listbox and Combobox via a dedicated add/remove/reorder editor, instead of hand-editing a Python list that's pretending to be a UI (`['Item 1', 'Item 2', 'Item 3']` — never again)
+- Notebook tab names and the active tab
+- Image source path and aspect-ratio behavior
+- Calendar date range, first weekday, and formatting
+- Tooltip text and design-time **Visible** flag
+- Parent/container assignment
+
+Multi-selecting several elements shows a **shared property panel** so you can, say, set the same font on ten Labels at once instead of clicking each one individually like it's 2003.
+
+### 7. Code Generation
+
+`CodeGenerator.generate()` walks your design model — containers first, then children by depth — and emits a complete, working `MainApplication` class using **plain `tkinter` / `ttk`**. No CustomTkinter, no framework lock-in, no mystery imports your exported app doesn't actually need.
+
+What it handles automatically:
+
+- Import management (only pulling in `pandas`, `PIL`, `tkcalendar`, etc. when an element actually needs them)
+- Widget construction and parent-hierarchy reconstruction
+- Geometry placement (`.place()` with exact coordinates)
+- `tk.StringVar` / `tk.IntVar` creation for Radiobuttons, Checkbuttons, and bound Entry fields
+- Notebook tab creation, Listbox item insertion, Combobox values, Spinbox defaults
+- Event binding, using a sensible default event per widget type (`command` for buttons, `<KeyRelease>` for text entry, `<<ComboboxSelected>>` for dropdowns, and so on)
+- Auto-generated (but fully editable) event-handler method stubs, one per interactive element
+- Embedding the tooltip helper and/or instrumentation-widget runtime only when actually used
+- Preserving **your** hand-written module-level code and class-level code across regenerations
+
+### 8. The Live Code Editor
+
+Double-click any element (or use the toolbar) to open the integrated code editor:
+
+- View and edit the **full generated source**, or just a single element's event handler
+- **Find & Replace** with match highlighting, `F3` / `Shift+F3` to step through matches
+- **AST-based syntax checking** — GuiBuilder actually parses your edits with Python's `ast` module and reports the exact line/column of a syntax error before letting a broken save propagate downstream
+- One click to **open the generated file in VS Code**
+- The editor window is single-instance: reopening it brings the existing window to the front instead of spawning a second one to get confused about
+
+### 9. Undo / Redo & Persistence
+
+- Every meaningful design change pushes a serialized project-state snapshot onto an undo stack (debounced during rapid edits like dragging, so you don't burn through 40 undo steps for one continuous motion).
+- `Ctrl+Z` / `Ctrl+Y` (or `Ctrl+Shift+Z`) walk backward and forward through history.
+- Designs save as `.tvd` project files — plain JSON under the hood — capturing every element, its properties, the window title, canvas size/background, custom code regions, and the full generated source.
+- Reopening a `.tvd` file reconstructs the model, the canvas, the property state, *and* the generated code exactly as you left it.
+
+### 10. Preview and EXE Packaging
+
+**Run Preview** stages your generated app in a temporary directory, checks for any missing third-party packages your design actually requires (auto-detected from what it imports), offers to `pip install` them on the spot, and then runs the app in an isolated subprocess so a bug in your generated app can't take the designer down with it.
+
+**Convert To EXE** wraps the same generated source with **PyInstaller**, streaming the build log back into the builder in real time, and copies the finished executable to wherever you point it. Because pandas' Excel engine and `tkcalendar`'s locale data are loaded dynamically (not via a static top-level import PyInstaller's analysis can see), GuiBuilder knows to pass the right `--collect-all` flags automatically instead of leaving you to discover that the hard way after a 90-second build.
+
+> **Heads-up:** EXE generation targets Windows executables. You can design and preview on macOS/Linux just fine — building the final `.exe` is a Windows-side step.
+
+### 11. Images, Tables & Calendars
+
+- **Image** elements copy your chosen file into the project's `resources/` folder and store a path relative to the project root — anchored to the project location rather than `os.getcwd()`, because Tkinter's native file picker is notorious for silently changing the current working directory as a side effect of just... browsing for a file. (Ask us how we know.)
+- **Table** elements are built on `ttk.Treeview` with configuration for external Excel/CSV sources, backed by `pandas` and `openpyxl`.
+- **Calendar** elements integrate `tkcalendar`, with configurable date range, first weekday, and display format.
 
 ---
 
 ## Architecture
 
-The application uses a composition-root-plus-mixins architecture.
+GuiBuilder is built as a **composition-root-plus-mixins** design. There's still exactly one `GUIBuilderApp` object from the outside, but its responsibilities are split across focused modules instead of living in one increasingly unmanageable file:
 
 ```mermaid
 flowchart TD
-    A[gui_builder.py\nEntry Point] --> B[GUIBuilderApp\napp.py]
-    B --> C[UIMixin\nui_mixin.py]
-    B --> D[CanvasMixin\ncanvas_mixin.py]
-    B --> E[PropertiesMixin\nproperties_mixin.py]
-    B --> F[ProjectMixin\nproject_mixin.py]
-    B --> G[CodeMixin\ncode_mixin.py]
+    A["gui_builder.py — Entry Point"] --> B["GUIBuilderApp (app.py)"]
+    B --> C["UIMixin — ui_mixin.py"]
+    B --> D["CanvasMixin — canvas_mixin.py"]
+    B --> E["PropertiesMixin — properties_mixin.py"]
+    B --> F["ProjectMixin — project_mixin.py"]
+    B --> G["CodeMixin — code_mixin.py"]
+    B --> H["HelpMixin — help_mixin.py"]
 
-    D --> H[DesignElement\nmodels.py]
-    E --> H
-    F --> H
-    G --> I[CodeGenerator\ncode_generator.py]
-    D --> J[CanvasRenderer\nrenderer.py]
-    E --> J
-    F --> J
-    I --> K[Tkinter / ttk Source]
-    G --> L[Preview / PyInstaller]
-    E --> M[config.py\nProperties & Widget Catalogue]
-    I --> M
+    D --> M["DesignElement — models.py"]
+    E --> M
+    F --> M
+    G --> N["CodeGenerator — code_generator.py"]
+    D --> R["CanvasRenderer — renderer.py"]
+    E --> R
+    N --> S["Generated tkinter / ttk Source"]
+    G --> P["Run Preview / PyInstaller"]
+    E --> K["config.py — Widget Catalogue & Property Metadata"]
+    N --> K
 ```
 
-### Why the split matters
+| Module | Responsibility |
+|---|---|
+| `app.py` | Composition root — wires up state and every mixin, binds global shortcuts |
+| `ui_mixin.py` | Application shell: toolbar, toolbox, zoom, scrolling, tooltips |
+| `canvas_mixin.py` | Selection, hit-testing, drag/resize, hierarchy, copy/paste, context menus |
+| `properties_mixin.py` | The property inspector and live property → model → canvas → code sync |
+| `project_mixin.py` | Save/load, undo/redo, new/open/save workflows |
+| `code_mixin.py` | Generated-code lifecycle, code editor, syntax checking, preview, EXE build |
+| `code_generator.py` | Pure design-model → Python-source conversion, nothing else |
+| `renderer.py` | Draws design elements on the canvas — knows nothing about persistence or code |
+| `models.py` | The `DesignElement` domain object and its serialization |
+| `config.py` | Widget catalogue, property field metadata, defaults, event mapping, constants |
+| `dependencies.py` | Centralized imports and optional-dependency detection (e.g., Pillow) |
+| `instrumentation_widgets.py` | The self-contained runtime for LEDs, gauges, and mechanical buttons |
+| `help_mixin.py` | The in-app help panel and contextual tooltip system |
 
-The application still behaves as one `GUIBuilderApp`, but the responsibilities are separated:
+**Why the split matters:** before adding logic anywhere, the natural question is *"which responsibility does this belong to?"* If the answer is "canvas interaction," it goes in `canvas_mixin.py`. If it's "code generation," it belongs in `code_generator.py`. If the honest answer is "kind of everywhere," that's usually a sign to stop and reconsider — that's precisely how a tidy module becomes an ancient, unmaintainable ruin nobody wants to touch.
 
-- **`app.py`** — composition root and initialization.
-- **`ui_mixin.py`** — application shell, toolbar, toolbox, zoom, scrolling, tooltips, and general UI behavior.
-- **`canvas_mixin.py`** — selection, hit testing, placement, moving, resizing, hierarchy, copy/paste, and canvas interaction.
-- **`properties_mixin.py`** — property inspector, live property updates, item editors, tab management, and resource selection.
-- **`project_mixin.py`** — persistence, project state, undo/redo, new/open/save workflows.
-- **`code_mixin.py`** — generated-code lifecycle, preview, EXE conversion, code editor, syntax checking, and custom-code synchronization.
-- **`code_generator.py`** — pure responsibility for converting design state into Python source.
-- **`renderer.py`** — visual rendering of design elements on the canvas.
-- **`models.py`** — `DesignElement` domain model and serialization.
-- **`config.py`** — widget catalogue, defaults, property metadata, event mapping, constants, and generation rules.
-- **`dependencies.py`** — shared imports and optional dependency detection.
-
-This structure is intentionally pragmatic. It is not a microservice architecture for a button editor. That would be a little ambitious for a desktop GUI designer whose most dangerous dependency is usually a misplaced `grid()` call.
+This is intentionally pragmatic rather than academic. It is not a microservices architecture for a button editor — that would be a little ambitious for a desktop GUI designer whose scariest dependency is usually a misplaced `.grid()` call.
 
 ---
 
-## Visual Documentation
+## Prerequisites and System Requirements
 
-### 1. Application Architecture
+| Requirement | Details |
+|---|---|
+| **Python** | 3.10 or newer |
+| **Tkinter** | Included with most standard Python installs; verified separately below |
+| **OS** | Windows, macOS, or Linux for designing/previewing |
+| **EXE packaging** | Windows only (PyInstaller builds a native `.exe`) |
+| **Disk/RAM** | Trivial — this is a desktop form designer, not a neural network |
 
-The Mermaid diagram above shows how the application is assembled and how the major responsibilities interact.
+### Python dependencies
 
-### 2. Design-to-Executable Workflow
-
-```mermaid
-flowchart LR
-    A[Create / Open Design] --> B[Place Widgets]
-    B --> C[Edit Properties]
-    C --> D[Canvas Rendering]
-    C --> E[Design Model]
-    E --> F[Code Generator]
-    F --> G[Generated Python]
-    G --> H[Live Code Editor]
-    H --> I[Syntax Check]
-    I --> J[Run Preview]
-    J --> K[Validated GUI]
-    G --> L[PyInstaller]
-    L --> M[EXE]
-```
-
-### 3. Selection Scope
-
-```mermaid
-flowchart TD
-    A[Canvas Context] --> B{Active container?}
-    B -- No --> C[Root-level context]
-    B -- Yes --> D[Container context]
-    C --> E[Ctrl+A\nlegacy global selection]
-    D --> F[Ctrl+Shift+A\ncontainer-scoped selection]
-    D --> G[Right-drag marquee\ncontainer-scoped selection]
-```
-
-### 4. Property-to-Code Flow
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Inspector
-    participant Model
-    participant Renderer
-    participant Generator
-    participant CodeEditor
-
-    User->>Inspector: Change property
-    Inspector->>Model: Update DesignElement
-    Inspector->>Renderer: Redraw element
-    Inspector->>Generator: Regenerate affected source
-    Generator->>CodeEditor: Refresh generated code
-```
-
-### Recommended GitHub Screenshots
-
-The repository can be enhanced with screenshots in a future `/docs/images/` directory. Recommended captures are:
-
-1. Main designer window with toolbox, canvas, and property inspector.
-2. Nested container showing the scoped-selection workflow.
-3. Listbox/Combobox item editor in the property panel.
-4. Notebook with multiple editable tabs.
-5. Generated-code editor with syntax validation.
-6. Previewed generated application.
-7. EXE build log and final executable location.
-
-Example Markdown once screenshots are added:
-
-```markdown
-![Main GUI Designer](docs/images/main-designer.png)
-![Scoped Container Selection](docs/images/scoped-selection.png)
-![Property Item Editor](docs/images/item-editor.png)
-```
-
-No screenshots are embedded in this version because the supplied project archive does not contain GUI screenshots. Mermaid diagrams are used instead so this README remains self-contained and GitHub-renderable.
-
----
-
-## Installation and Setup
-
-### System requirements
-
-Recommended baseline:
-
-- Python **3.10 or newer**.
-- A desktop environment capable of running Tkinter.
-- Tkinter installed with the Python distribution.
-- Windows is recommended for the EXE packaging workflow because the project explicitly supports Windows executable generation through PyInstaller.
-
-### Dependencies
-
-The supplied `requirements.txt` currently contains:
+From `requirements.txt`:
 
 ```text
 Pillow
@@ -563,26 +333,28 @@ openpyxl
 tkcalendar
 ```
 
-`PyInstaller` is used by the Convert To EXE workflow and can be installed separately or by the application's packaging workflow when needed.
+`PyInstaller` is used specifically by the **Convert To EXE** workflow. It isn't in `requirements.txt` because not everyone needs to package an executable — install it only if/when you do (GuiBuilder will also offer to install it for you automatically the first time you use that feature).
+
+---
+
+## Installation
 
 ### Step 1 — Clone the repository
 
 ```bash
-git clone https://github.com/<your-account>/<your-repository>.git
-cd <your-repository>
+git clone https://github.com/rahilkasimi/GuiBuilder.git
+cd GuiBuilder
 ```
 
-### Step 2 — Create a virtual environment
+### Step 2 — Create a virtual environment (recommended)
 
-Windows:
-
+**Windows:**
 ```powershell
 python -m venv .venv
 .venv\Scripts\activate
 ```
 
-Linux/macOS:
-
+**macOS / Linux:**
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -595,39 +367,35 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-For EXE generation, also make sure PyInstaller is available:
+Planning to build a Windows executable eventually? Grab PyInstaller too:
 
 ```bash
 pip install pyinstaller
 ```
 
-### Step 4 — Verify Tkinter
-
-Run:
+### Step 4 — Verify Tkinter is available
 
 ```bash
 python -c "import tkinter; print(tkinter.TkVersion)"
 ```
 
-If this fails, the problem is your Python/Tk installation rather than the builder itself.
+If this errors out, the problem is your Python/Tk installation, not GuiBuilder — see [Troubleshooting](#troubleshooting).
 
-### Step 5 — Launch the designer
+### Step 5 — Launch GuiBuilder
 
 ```bash
 python gui_builder.py
 ```
 
+The main window opens maximized, ready for you to start dragging widgets onto the canvas.
+
 ---
 
-## Running the Application
+## Usage
 
-The project's entry point is:
+### Running the Application
 
-```text
-gui_builder.py
-```
-
-Its job is intentionally small: create the Tk root window, construct `GUIBuilderApp`, and start Tkinter's main event loop.
+The entry point is intentionally tiny — its whole job is to create the Tk root window, construct `GUIBuilderApp`, and start the event loop:
 
 ```python
 import tkinter as tk
@@ -638,59 +406,51 @@ GUIBuilderApp(root)
 root.mainloop()
 ```
 
----
-
-## Basic Workflow
-
-A normal design workflow looks like this:
+### Basic Workflow
 
 ```text
-1. Launch GUI Builder
+1.  Launch GuiBuilder
         ↓
-2. Choose a widget from the toolbox
+2.  Pick a widget from the toolbox
         ↓
-3. Click the canvas to place it
+3.  Click the canvas to place it
         ↓
-4. Select the widget and edit properties
+4.  Select it and edit its properties
         ↓
-5. Resize / move / nest widgets
+5.  Resize / move / nest it inside a container
         ↓
-6. Save the .tvd design
+6.  Save the design as a .tvd file        (Ctrl+S)
         ↓
-7. Inspect generated Python code
+7.  Inspect the auto-generated Python code
         ↓
-8. Run Preview
+8.  Run Preview to see the real app run
         ↓
-9. Correct / extend code if required
+9.  Tweak generated / handler code as needed
         ↓
-10. Convert To EXE when the application is ready
+10. Convert To EXE when you're ready to ship
 ```
 
-### Practical example: Create a simple login form
+### Worked Example: A Login Form
 
-1. Add a `Label` for **Username**.
-2. Add an `Entry` below it.
-3. Add a `Label` for **Password**.
-4. Add another `Entry` and configure `show` to mask input.
-5. Add a `Button` with a command/handler.
-6. Place all controls inside a `Frame`.
-7. Use the property inspector to adjust fonts, colors, dimensions, and text.
-8. Open the generated code.
-9. Use the editor to implement the real authentication logic.
-10. Run Preview.
-11. Save the design and package the application when ready.
+1. Drag a **Label** onto the canvas; set its text to `Username`.
+2. Drag an **Entry** below it.
+3. Add another **Label** (`Password`) and a second **Entry** — set its `show` property to `*` to mask input.
+4. Add a **Button**, set its text to `Log In`.
+5. Select all four and drop them into a **Frame** for tidy grouping.
+6. Use the Property Inspector to fine-tune fonts, colors, and sizing.
+7. Double-click the button to open its handler in the code editor and write your actual authentication logic.
+8. Hit **Run Preview** — a real window pops up, running your real code.
+9. Save the design, then **Convert To EXE** once you're happy.
 
-The visual designer handles the repetitive plumbing; the developer remains responsible for the application logic. That division is healthy. Buttons can be dragged. Business rules should generally not be.
+The designer handles the repetitive plumbing so you can focus on what the app actually *does*. Buttons can be dragged around a canvas all day; business logic generally should not be.
 
----
+### What Generated Code Looks Like
 
-## Usage Examples
-
-### Example 1 — Generated Tkinter structure
-
-A generated application follows the normal Python/Tkinter model, conceptually similar to:
+A design with a Label, an Entry, and a Button produces something close to this (trimmed for readability):
 
 ```python
+"""Generated by Tkinter Visual Designer."""
+
 import tkinter as tk
 from tkinter import ttk
 
@@ -698,700 +458,303 @@ from tkinter import ttk
 class MainApplication:
     def __init__(self, root):
         self.root = root
-        self.root.title("My Application")
+        root.title("My Application")
+        root.geometry("800x600")
+        root.configure(bg="#FFFFFF")
 
-        self.label_1 = tk.Label(root, text="Hello")
-        self.label_1.place(x=40, y=40, width=120, height=30)
+        self._elem_1 = tk.Label(root, text="Username", font=("Segoe UI", 9))
+        self._elem_1.place(x=40, y=40, width=120, height=30)
 
-        self.button_1 = tk.Button(root, text="Click Me")
-        self.button_1.place(x=40, y=90, width=100, height=34)
+        self._elem_2 = tk.Entry(root, font=("Segoe UI", 9))
+        self._elem_2.place(x=40, y=80, width=160, height=30)
+
+        self._elem_3 = tk.Button(root, text="Log In", command=self._on_Button_3)
+        self._elem_3.place(x=40, y=130, width=100, height=34)
+
+    def _on_Button_3(self, event=None):
+        """
+        Event handler for Button (ID: 3).
+        Triggered by: command
+        Access widget instance via: self._elem_3
+        """
+        pass
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     root = tk.Tk()
-    MainApplication(root)
+    app = MainApplication(root)
     root.mainloop()
 ```
 
-The exact generated output depends on the widgets and properties in the design.
-
-### Example 2 — Combobox values
-
-A visual design with values:
-
-```text
-Development
-Testing
-Production
-```
-
-can result in generated code following the same model as:
-
-```python
-combo = ttk.Combobox(
-    root,
-    values=["Development", "Testing", "Production"],
-    state="readonly",
-)
-```
-
-### Example 3 — Spinbox default
-
-A Spinbox configured with a default value of `5` is generated so the value replaces the widget's native starting contents rather than being appended to them.
-
-Conceptually:
-
-```python
-spinbox.delete(0, "end")
-spinbox.insert(0, 5)
-```
-
-### Example 4 — Custom handler code
-
-An element can carry handler code such as:
-
-```python
-messagebox.showinfo("Status", "Button pressed")
-```
-
-The code-generation layer keeps handler code associated with the element so a later full regeneration can reproduce the handler instead of silently reverting it to a placeholder.
-
-### Example 5 — Custom application code
-
-The code editor can preserve custom module-level and class-level code that is outside the builder's automatically managed regions.
-
-This enables patterns such as:
-
-```python
-import logging
-
-
-def write_audit_log(message):
-    logging.info(message)
-```
-
-while continuing to regenerate the visual portion of the application.
+Notice what's *not* there: no custom base classes, no runtime dependency on GuiBuilder itself, no obfuscation. It's a `.py` file a colleague could open cold and immediately understand — because that colleague might be you, six months from now, wondering why `Entry` #17 does what it does.
 
 ---
 
-## Project Files and Persistence
+## Keyboard Shortcuts
 
-A saved design uses the `.tvd` file extension.
+| Shortcut | Action |
+|---|---|
+| `Ctrl+N` | New design |
+| `Ctrl+O` | Open / load a design |
+| `Ctrl+S` | Save design |
+| `Ctrl+Shift+S` | Save design as… |
+| `Ctrl+Z` | Undo |
+| `Ctrl+Y` / `Ctrl+Shift+Z` | Redo |
+| `Ctrl+C` / `Ctrl+V` | Copy / paste selected elements |
+| `Delete` | Delete selected elements |
+| `Arrow keys` | Nudge selected elements |
+| `Ctrl+A` | Select all (root level) |
+| `Ctrl+Shift+A` | Select all *within the current container* |
+| Right-click + drag | Marquee selection (scoped to current container) |
+| `Ctrl` + Mouse wheel | Zoom the canvas in/out |
+| Double-click an element | Open its code / handler in the code editor |
+| Right-click an element | Context menu (group, ungroup, bring to front, send to back, etc.) |
 
-The file stores serialized project state rather than an opaque binary project format.
+**Inside the code editor:**
 
-Conceptual structure:
-
-```json
-{
-  "elements": [
-    {
-      "elem_id": 1,
-      "elem_type": "Button",
-      "props": {
-        "text": "Run"
-      }
-    }
-  ],
-  "next_id": 2,
-  "reusable_ids": [],
-  "window_title": "My Application",
-  "canvas_w": 800,
-  "canvas_h": 600,
-  "canvas_bg": "#FAFAFA",
-  "window_state": "Normal",
-  "canvas_imports": "...",
-  "full_code": "...",
-  "custom_module_code": "...",
-  "custom_class_code": "..."
-}
-```
-
-The exact serialized content evolves with the project model, so applications should treat `.tvd` as the builder's project format rather than as a public interchange specification.
+| Shortcut | Action |
+|---|---|
+| `Ctrl+S` | Save code (runs the syntax checker first) |
+| `Ctrl+F` | Find |
+| `Ctrl+H` | Find & Replace |
+| `F3` / `Shift+F3` | Jump to next / previous match |
+| `Escape` | Clear search highlighting / close panel |
 
 ---
 
-## Code Generation
+## Configuration Options
 
-The central generator is:
+GuiBuilder doesn't use an external `config.ini` or `.env` file — it's a design tool, so its "configuration" is the rich, per-widget **property system** you interact with directly in the Property Inspector. Every element type has its own curated field list defined in `PROPERTY_FIELDS` (in `gui_builder/config.py`), so the inspector only ever shows options that are actually relevant to what you've selected.
 
-```text
-gui_builder/code_generator.py
-```
+A few representative examples:
 
-The `CodeGenerator` is responsible for turning `DesignElement` records into Python source.
+<details>
+<summary><strong>Button</strong> — click to expand</summary>
 
-Important generation stages include:
+| Field | Description |
+|---|---|
+| `text` | Button label |
+| `font` | Font family / size / weight |
+| `fg` / `bg` | Text and background color |
+| `command` | Name of the handler method called on click |
+| `border_width` | Border thickness |
 
-1. Determine the element/widget class.
-2. Resolve the parent widget.
-3. Convert supported properties to constructor arguments.
-4. Handle widget-specific properties separately where Tk/ttk requires it.
-5. Generate geometry placement.
-6. Generate child hierarchy and Notebook tabs.
-7. Apply default values and post-construction initialization.
-8. Attach tooltip behavior when configured.
-9. Merge event-handler code.
-10. Build the final source template.
+</details>
 
-### Why widget-specific generation exists
+<details>
+<summary><strong>Combobox</strong> — click to expand</summary>
 
-Tkinter and ttk do not share one universal constructor API.
+| Field | Description |
+|---|---|
+| `values` | The dropdown's item list (edited via the dedicated item editor) |
+| `state` | `normal`, `readonly`, or `disabled` |
+| `default_value` | Value shown when the app starts |
+| `sorted` | Whether items are alphabetized |
+| `maxdropdown` / `maxlength` | Visible row cap / input character cap |
 
-For example:
+</details>
 
-- `tk.Frame` accepts Tk options such as `bd`.
-- `ttk.Combobox` does not accept the same constructor options.
-- `ttk.Notebook` is also style-driven for many visual properties.
-- A Listbox's `items` are data rather than a constructor option that can simply be emitted unchanged.
-- A Spinbox default value is often best applied after construction.
+<details>
+<summary><strong>Gauge / Meter</strong> — click to expand</summary>
 
-The generator therefore uses a generic property path plus targeted special handling where necessary.
+| Field | Description |
+|---|---|
+| `value`, `min_value`, `max_value` | Current reading and range |
+| `start_angle` / `end_angle` | Sweep geometry of the dial |
+| `needle_color`, `arc_color`, `track_color`, `tick_color` | Full color control |
+| `ticks` | Number of tick marks |
+| `unit` | Text label shown next to the value |
 
----
+</details>
 
-## Live Code Editing
+<details>
+<summary><strong>Calendar</strong> — click to expand</summary>
 
-The code editor is more than a text box glued to the side of the UI.
+| Field | Description |
+|---|---|
+| `initial_date` | Date shown on load (`YYYY-MM-DD`) |
+| `date_pattern` | Display format (`yyyy-mm-dd`, `mm/dd/yyyy`, etc.) |
+| `firstweekday` | `monday` or `sunday` |
+| `mindate` / `maxdate` | Selectable date range |
+| `selectbackground` / `normalbackground` | Selected vs. normal day coloring |
 
-It maintains the relationship between:
+</details>
 
-```text
-Visual Design
-     ↕
-Design Model
-     ↕
-Generated Source
-     ↕
-Element Handler Code / Custom Code
-```
+Two settings apply to **every** element regardless of type, tucked at the end of every property list:
 
-### Important behavior
+- **Tooltip** — hover text shown in the generated application
+- **Visible** — whether the widget is shown when the exported app *starts* (it's still created either way, so any code referencing it continues to work — it just isn't `place()`d until you decide it should be)
 
-- Full regeneration rebuilds generated structure from the current model.
-- Incremental code updates can insert newly created elements without rewriting everything unnecessarily.
-- Handler code is extracted and synchronized.
-- Custom module-level code is preserved.
-- Custom class-level code is preserved.
-- Imports required by the generated source can be reconciled.
-- The editor performs syntax validation using Python's AST machinery.
-
-### Syntax-checking example
-
-An invalid edit such as:
-
-```python
-if True
-    print("missing colon")
-```
-
-is detected as a Python syntax error before the normal save flow proceeds.
+Want to extend or tweak defaults globally? `ELEMENT_TYPES["<Type>"]["defaults"]` in `config.py` is the single source of truth every new element of that type is initialized from.
 
 ---
 
-## Preview and EXE Conversion
+## Key Functions
 
-### Run Preview
+For anyone diving into the codebase, here are the functions doing the heavy lifting, grouped by module:
 
-The preview workflow creates a temporary staging area so the generated application can be executed independently of the builder's own process.
-
-This is important for catching problems such as:
-
-- Missing imports.
-- Missing Python packages.
-- Invalid generated syntax.
-- Runtime exceptions.
-- Missing project resources.
-
-### Convert To EXE
-
-The executable workflow is based on PyInstaller.
-
-Typical process:
-
-```text
-Generated Python
-      ↓
-Dependency detection
-      ↓
-Clean staging directory
-      ↓
-Resource copy
-      ↓
-PyInstaller build
-      ↓
-Build log
-      ↓
-Executable
-```
-
-The builder can stage resources and handle the generated script so that the final executable is based on the current visual design rather than the builder's own source tree.
-
-### Windows note
-
-For Windows distribution, test the generated EXE on a clean machine before shipping it to users. Your development environment has an inconvenient habit of supplying dependencies that you forgot were dependencies.
+| Function | Module | What it does |
+|---|---|---|
+| `GUIBuilderApp.__init__` | `app.py` | Boots the whole application: window, state, bindings, initial UI build |
+| `CanvasMixin._add_element` | `canvas_mixin.py` | Places a new `DesignElement` on the canvas at a given position |
+| `CanvasMixin._select_all_scoped` | `canvas_mixin.py` | Implements container-aware `Ctrl+Shift+A` selection |
+| `CanvasMixin._on_canvas_drag` | `canvas_mixin.py` | Handles live dragging/resizing, including nested-container cascading |
+| `CanvasMixin._group_elements` / `_ungroup_elements` | `canvas_mixin.py` | Assigns/clears a design-time Group ID across a selection |
+| `PropertiesMixin._show_properties` | `properties_mixin.py` | Builds the live property panel for the selected element(s) |
+| `PropertiesMixin._on_live_prop_change` | `properties_mixin.py` | Applies a property edit to the model, canvas, and generated code together |
+| `PropertiesMixin._build_item_collection_editor` | `properties_mixin.py` | Powers the Listbox/Combobox item add/remove/reorder UI |
+| `ProjectMixin._save_state` / `_load_state` | `project_mixin.py` | Serializes/restores full project snapshots for undo/redo |
+| `ProjectMixin._undo` / `_redo` | `project_mixin.py` | Steps through the undo/redo history stacks |
+| `ProjectMixin._save_design` / `_load_design` | `project_mixin.py` | Persists/reads `.tvd` project files |
+| `CodeGenerator.generate` | `code_generator.py` | Converts the full design model into a complete Python source file |
+| `CodeGenerator.generate_element_lines` | `code_generator.py` | Produces the widget-construction + placement lines for one element |
+| `CodeMixin._run_preview` | `code_mixin.py` | Stages, dependency-checks, and executes the generated app in a subprocess |
+| `CodeMixin._convert_to_exe` | `code_mixin.py` | Drives the PyInstaller build and streams the log back to the UI |
+| `CodeMixin._detect_required_packages` | `code_mixin.py` | Infers which third-party packages the generated code actually needs |
+| `CodeMixin._check_syntax` | `code_mixin.py` | Runs the code editor's AST-based syntax validation |
+| `CodeMixin._extract_custom_regions` | `code_mixin.py` | Pulls out hand-written code so regeneration never silently deletes it |
+| `CanvasRenderer.draw_element` | `renderer.py` | Dispatches to the correct per-widget-type drawing routine on the canvas |
+| `DesignElement.to_dict` / `from_dict` | `models.py` | Serializes/deserializes a single element for save/load and undo/redo |
 
 ---
 
-## Selection and Container Workflow
+## Sample Projects
 
-### Root-level selection
+The repository ships with ready-to-open examples so you can explore instead of starting from a blank canvas:
 
-`Ctrl+A` retains the original root-level select-all behavior for compatibility.
+- **`Sample Applications/Calculator_windows.tvd`** — a working calculator UI, demonstrating grid-aligned button layouts and styled controls.
+- **`Sample Applications/Instrumentation_Dashboard.tvd`** — a dashboard built entirely from the LED/Gauge/Push-Button instrumentation widgets.
+- **`Sample Images/`** — reference screenshots of the designer and a generated application in action (the same ones featured near the top of this README).
 
-### Container-scoped selection
-
-`Ctrl+Shift+A` selects elements inside the active container only.
-
-The active scope is resolved from the current canvas context, and nested containers are traversed through the element parent hierarchy.
-
-### Right-button marquee selection
-
-Right-click and drag creates a selection rectangle scoped to the appropriate container context rather than selecting unrelated objects elsewhere on the canvas.
-
-### Native text controls are protected
-
-Keyboard shortcuts are guarded so text-entry widgets and the code editor can retain their native clipboard and text-selection behavior.
-
-This matters because a GUI builder that steals `Ctrl+A` from an Entry field has technically built a GUI, but not one anyone should have to use.
-
----
-
-## Property Inspector
-
-The property inspector contains both generic and widget-specific editors.
-
-### Generic property flow
-
-```text
-Property metadata
-      ↓
-Inspector row
-      ↓
-Tk / ttk control
-      ↓
-Live change callback
-      ↓
-DesignElement.props
-      ↓
-Canvas redraw
-      ↓
-Code update
-```
-
-### Dedicated editors
-
-Some properties cannot be treated as a simple `StringVar` + Entry field.
-
-Dedicated handling exists for:
-
-- Listbox items.
-- Combobox values.
-- Notebook tabs.
-- Notebook active tab.
-- Fonts.
-- Colors.
-- Image files.
-- Table source files.
-- Window state.
-- Canvas dimensions.
-
----
-
-## Recent Reliability Fixes
-
-This release includes focused fixes for four design-time problems.
-
-### Fix 1 — Container-scoped selection
-
-**Before:** selection commands could operate on unrelated elements outside the current container context.
-
-**After:**
-
-- `Ctrl+Shift+A` selects only elements in the active container.
-- Right-drag marquee selection is container-scoped.
-- Existing `Ctrl+A` behavior remains available at root scope.
-
-### Fix 2 — Collection editor for Listbox / Combobox
-
-**Before:** item collections were exposed as raw Python-style list strings.
-
-**After:** a dedicated property-panel editor allows individual item selection, addition, and removal.
-
-### Fix 3 — Border width for Label / Frame / Combobox / Notebook
-
-**Before:** some controls rejected the supplied border option or produced an error, especially ttk controls.
-
-**After:**
-
-- Tk-native border handling is used for Tk widgets.
-- ttk controls use style configuration where required.
-- Notebook no longer receives an invalid constructor option.
-
-### Fix 4 — Spinbox default value
-
-**Before:** the native initial value could remain in the widget and be concatenated with the configured default.
-
-**After:** generated initialization explicitly clears the starting value before inserting the configured value.
-
----
-
-## Architecture Details
-
-### `models.py`
-
-Defines the `DesignElement` data model.
-
-Responsibilities include:
-
-- Element identity.
-- Position and size.
-- Parent relationship.
-- Selection metadata.
-- Property storage.
-- Serialization / deserialization.
-- Hit-testing helpers.
-- Resize-handle calculations.
-
-### `renderer.py`
-
-The `CanvasRenderer` translates design elements into visual canvas representations.
-
-It contains individual drawing paths for many widget classes and visual states.
-
-The renderer is intentionally separate from the data model and code generator.
-
-### `canvas_mixin.py`
-
-Owns interactive editing behavior, including:
-
-- Mouse handling.
-- Selection.
-- Marquee selection.
-- Hierarchy lookup.
-- Dragging.
-- Resizing.
-- Copy/paste.
-- Delete.
-- Notebook context handling.
-- Placement.
-
-### `properties_mixin.py`
-
-Owns the property inspector and live updates.
-
-This is also where the dedicated collection editor lives.
-
-### `project_mixin.py`
-
-Owns:
-
-- New design.
-- Save / Save As.
-- Load.
-- Serialized history.
-- Undo.
-- Redo.
-- Modified-state tracking.
-
-### `code_mixin.py`
-
-Owns the development lifecycle around generated code:
-
-- Generated-code refresh.
-- Custom-code preservation.
-- Preview execution.
-- Dependency checks.
-- EXE conversion.
-- Code editor.
-- Syntax checking.
-- VS Code integration.
-
-### `code_generator.py`
-
-Owns Python source generation and widget-specific generation logic.
-
-### `config.py`
-
-Acts as a configuration hub for:
-
-- Widget catalogue.
-- Default element properties.
-- Toolbox categories.
-- Property fields.
-- Default event mapping.
-- Generation exceptions.
-- Constants such as grid size and minimum element dimensions.
-
----
-
-## Testing and Validation
-
-The project has already been subjected to structural validation during the modular refactor and bug-fix work.
-
-Validated areas include:
-
-- Python syntax compilation for extracted modules.
-- Presence of the original application methods across the responsibility mixins.
-- Application import/launch path under the documented dependency set.
-- Absence of a CustomTkinter runtime dependency.
-- Generated-code syntax validation for affected widget classes.
-- Mixed-widget generated source validation.
-- Container-scope selection logic, including nested containers.
-- Preservation of existing left-button canvas interaction behavior.
-
-### Recommended contributor test pass
-
-Before merging significant changes, verify at least:
-
-```text
-[ ] Launch application
-[ ] Add one widget of each affected type
-[ ] Move and resize widgets
-[ ] Nest widgets inside Frame / Notebook containers
-[ ] Test root Ctrl+A
-[ ] Test Ctrl+Shift+A inside a container
-[ ] Test right-drag marquee selection
-[ ] Edit Combobox / Listbox items
-[ ] Test Label / Frame / Combobox / Notebook border width
-[ ] Test Spinbox default values: 0, 5, 10, 100
-[ ] Save and reopen a .tvd project
-[ ] Undo / redo property changes
-[ ] Regenerate code
-[ ] Run syntax checking
-[ ] Run Preview
-[ ] Convert a sample project to EXE on Windows
-```
-
----
-
-## Troubleshooting
-
-### `ModuleNotFoundError: No module named 'tkcalendar'`
-
-Install the project requirements:
-
-```bash
-pip install -r requirements.txt
-```
-
-### Tkinter cannot be imported
-
-Verify that your Python distribution includes Tk support.
-
-On some Linux distributions Tkinter is packaged separately. Install the distribution's Tk package, then repeat the import check.
-
-### Images do not appear
-
-Check:
-
-1. The selected image path still exists.
-2. The image format is supported by Pillow/Tk.
-3. The image was copied into the project's `resources/` folder where appropriate.
-4. The project is being run with a valid resource path.
-
-The project intentionally avoids relying on `os.getcwd()` for resource resolution.
-
-### Combobox or Notebook border width throws an error
-
-Make sure the project is using the current generator implementation. These ttk widgets use style-based handling for border width rather than Tk-only constructor options.
-
-### Spinbox shows `05` instead of `5`
-
-Make sure the generated code contains the post-construction reset behavior:
-
-```python
-spinbox.delete(0, "end")
-spinbox.insert(0, 5)
-```
-
-If you still see concatenation, regenerate the source from the current project before testing an older cached preview file.
-
-### Preview runs in the builder but EXE fails
-
-Check the build log for:
-
-- Missing package detection.
-- Hidden imports.
-- Missing resources.
-- Runtime tracebacks.
-- PyInstaller build warnings.
-
-Always test a generated EXE outside the development environment.
-
-### `Ctrl+A` behaves strangely inside an Entry/Text widget
-
-This is intentional. The builder protects native text editing behavior so `Ctrl+A`, clipboard operations, and code-editor interactions are not hijacked by canvas selection logic.
-
-### The property panel appears stale while resizing
-
-Geometry fields are updated during active resize operations without rebuilding the complete inspector. This keeps the UI responsive and prevents a resize gesture from turning into a property-panel demolition derby.
-
----
-
-## Performance and Design Notes
-
-### Debounced project-state snapshots
-
-Frequent property changes can generate many intermediate states. The project mixin debounces state saving to reduce unnecessary undo-history churn.
-
-### Incremental and full code paths
-
-The code system supports both incremental updates and full regeneration. This is important because not every small visual change needs a complete source rebuild, while major structural operations must have a reliable regeneration path.
-
-### Resource paths are project-relative
-
-The application uses a stable base-directory strategy so file-dialog side effects do not unexpectedly change where assets are resolved from.
-
-### Plain Tkinter / ttk
-
-The decision to move away from CustomTkinter reduces the runtime dependency surface and makes generated code easier to understand for developers already familiar with standard Python GUI programming.
+Open either `.tvd` file via **Load Design** to see exactly how a finished project is structured.
 
 ---
 
 ## Contributing
 
-Contributions are welcome, especially when they improve reliability without quietly changing established behavior.
+Contributions, bug reports, and "here's a widget you're missing" requests are all welcome.
 
-### Recommended workflow
-
-1. Fork the repository.
-2. Create a feature branch.
-3. Make the smallest coherent change that solves the problem.
-4. Preserve existing public/internal behavior unless the change explicitly intends to modify it.
-5. Add or update tests/checks where practical.
-6. Run the application and exercise the affected GUI workflow manually.
-7. Validate generated source with Python syntax checking.
-8. Document user-visible changes.
-9. Submit a pull request describing the problem, solution, regression considerations, and validation performed.
-
-### Architectural rule of thumb
-
-Before adding logic to `GUIBuilderApp`, ask:
-
-> **Which responsibility does this actually belong to?**
-
-If the answer is “canvas interaction”, it probably belongs in `canvas_mixin.py`. If the answer is “code generation”, `code_generator.py` is likely the better home. If the answer is “everywhere”, stop and reconsider — that is how utility functions become ancient ruins.
-
-### Pull request checklist
+1. **Fork** the repository and create a feature branch.
+2. Keep changes inside their responsibility module — ask yourself *"which mixin/module does this actually belong to?"* before adding it somewhere convenient.
+3. Run a quick sanity pass before opening a PR:
 
 ```text
-[ ] Existing feature behavior was preserved
-[ ] New behavior is documented
-[ ] Affected module remains within its responsibility boundary
-[ ] Generated source remains valid Python
-[ ] Save/load still works
-[ ] Undo/redo still works
-[ ] Preview still works
-[ ] EXE workflow was considered
-[ ] No unnecessary dependency was introduced
-[ ] README was updated when user-facing behavior changed
+[ ] Existing feature behavior still works
+[ ] New behavior is documented (README and/or inline comments)
+[ ] The change stays within its module's responsibility boundary
+[ ] Generated Python source remains syntactically valid
+[ ] Save / Load still round-trips correctly
+[ ] Undo / Redo still works
+[ ] Run Preview still works
+[ ] EXE packaging was considered, if relevant
+[ ] No unnecessary new dependency was introduced
 ```
 
----
+4. Open a Pull Request describing **what** changed and **why** — "fixed stuff" is not a changelog, it's a cry for help.
 
-## License
-
-**License: TBD**
-
-No explicit license file was present in the supplied project archive. Before publishing this repository publicly, add the intended license as `LICENSE` (for example, MIT, Apache-2.0, or another license appropriate to the project and its dependencies).
-
-> Do not publish a repository containing third-party code or assets under a license you do not have permission to grant.
+Found a bug instead? Jump to [Troubleshooting](#troubleshooting) for what to include in a report.
 
 ---
 
-## Support
+## Troubleshooting
 
-For project-specific support, open a GitHub Issue and include:
+| Symptom | Likely Cause | Fix |
+|---|---|---|
+| `ModuleNotFoundError: No module named 'tkinter'` | Tkinter wasn't installed with your Python distribution (common on some Linux setups) | Debian/Ubuntu: `sudo apt install python3-tk`. Fedora: `sudo dnf install python3-tkinter`. macOS/Windows installers from python.org include it by default. |
+| App launches but looks tiny / oddly sized | Multi-monitor DPI scaling quirks | Try adjusting your OS display scaling, or resize the window manually — the designer respects `minsize(1000, 600)` as a floor. |
+| Image element shows a placeholder icon instead of my picture | Pillow isn't installed, or the file path is stale | `pip install Pillow`. The design canvas degrades to a placeholder instead of crashing when Pillow is missing — it won't take the whole app down over one thumbnail. |
+| Calendar widget option is missing / errors on use | `tkcalendar` not installed | `pip install tkcalendar` (also in `requirements.txt`). |
+| **Run Preview** reports a missing package | Your design uses `pandas`, `Pillow`, or `tkcalendar` features not yet installed in this environment | GuiBuilder detects this automatically and offers to `pip install` it for you — accept the prompt, or install manually and retry. |
+| **Convert To EXE** fails or hangs | PyInstaller isn't installed, or antivirus is quarantining the build output | `pip install pyinstaller`; temporarily whitelist the build folder if your AV is being overly enthusiastic (PyInstaller EXEs are a classic false-positive target). |
+| Excel/CSV Table doesn't load data in the exported EXE | `openpyxl` engine wasn't bundled | GuiBuilder's EXE build automatically detects `pandas` usage and adds the needed `openpyxl` collection — make sure you're on the latest version of this repo. |
+| Saved `.tvd` won't open / looks corrupted | Manual hand-editing introduced invalid JSON | `.tvd` files are plain JSON — validate with any JSON linter, or restore from a backup/undo history if available. |
+| A property edit doesn't seem to affect the generated code | The property key is design-time only (e.g. it's used purely for on-canvas rendering) | Check `SKIPPED_GENERIC_PROPS` in `config.py` — a small, documented set of properties are intentionally excluded from the generic pass-through because a dedicated code block already handles them. |
+| Code editor won't save my edits | AST syntax check caught an actual syntax error | Read the reported line/column — the editor is (politely) refusing to hand broken Python to the next stage of the pipeline. |
 
-- Operating system.
-- Python version.
-- Installed dependency versions.
-- Exact reproduction steps.
-- Error message / traceback.
-- A minimal `.tvd` project when the issue is design-specific.
-- Generated Python source when the issue appears during preview or EXE creation.
+### Filing a good bug report
 
-A useful bug report is much easier to fix than “it broke somehow after I clicked the orange thing.”
+Open a GitHub Issue with:
 
-### Suggested issue template
+- Operating system and Python version
+- Installed dependency versions (`pip freeze`)
+- Exact reproduction steps
+- The full error message / traceback
+- A minimal `.tvd` project, if the issue is design-specific
+- The generated `.py` source, if the issue shows up during Preview or EXE build
 
-```text
-## Environment
-OS:
-Python:
-Project version/commit:
-
-## Problem
-Describe the expected behavior and actual behavior.
-
-## Reproduction
-1.
-2.
-3.
-
-## Error
-Paste the complete traceback or build log.
-
-## Attachments
-- .tvd design, if relevant
-- generated .py source, if relevant
-- screenshots, if relevant
-```
+A precise bug report is dramatically easier to fix than *"it broke somehow after I clicked the orange thing."*
 
 ---
 
-## Roadmap Ideas
+## Roadmap
 
-These are suggestions rather than committed project requirements:
+Ideas, not commitments — contributions toward any of these are very welcome:
 
-- Automated GUI regression tests.
-- Native screenshot gallery in the repository.
-- More layout managers and geometry editors.
-- Expanded ttk styling controls.
-- Additional widget plugins.
-- A formal project-file schema/version migration system.
-- Better automated EXE smoke tests.
-- Configurable themes for the builder UI.
-- More advanced code formatting and linting.
-- Component templates / reusable design fragments.
+- Automated GUI regression tests
+- More layout managers and geometry editors beyond absolute positioning
+- Expanded `ttk` styling / theming controls
+- A formal project-file schema with version migration
+- Configurable builder UI themes
+- Component templates / reusable design fragments
+- Broader cross-platform packaging (macOS `.app`, Linux binaries)
 
 ---
 
 ## Project Status
 
-This repository represents an actively evolved Tkinter visual GUI builder with an SRP-oriented modular architecture and a live code-generation workflow.
+GuiBuilder is **actively developed** and built around an SRP-oriented modular architecture with a live code-generation workflow. Recent work has focused on:
 
-The supplied project includes the post-refactor codebase and the recent fixes for:
+- Container-scoped selection and marquee selection
+- Listbox / Combobox structured item editing
+- Correct border-width handling across Tk vs. ttk widgets
+- Spinbox default-value initialization fixes
+- The full instrumentation widget family (LEDs, gauges, mechanical buttons) with source-widget bindings
+- Design-time grouping and right-click context menus
+- A single-instance code editor window with find/replace and syntax checking
 
-- Container-scoped selection.
-- Listbox / Combobox collection editing.
-- Border width handling for affected Tk/ttk widgets.
-- Spinbox default-value initialization.
-
-The architecture is intentionally designed so future feature work can be added to the appropriate responsibility module without reopening the original monolithic-code problem.
-
----
-
-## Credits / Technology Stack
-
-Core technologies:
-
-- **Python** — application language.
-- **Tkinter / ttk** — desktop GUI and generated applications.
-- **Pillow** — image handling.
-- **pandas** — tabular data workflows.
-- **openpyxl** — Excel workbook support.
-- **tkcalendar** — calendar widget integration.
-- **PyInstaller** — Windows executable packaging.
+The architecture is intentionally set up so new features land in the module that actually owns that responsibility, instead of reopening the "one giant file" problem the project was refactored away from in the first place.
 
 ---
 
-## Final Notes
+## License
 
-The central design philosophy is straightforward:
+**License: TBD.**
 
-> **The GUI builder should make GUI work easier, while the generated Python should remain understandable and editable.**
+No license file currently ships with this repository. Before publishing it publicly (or accepting external contributions), add an explicit `LICENSE` file — MIT and Apache-2.0 are common, developer-friendly defaults for a project like this.
 
-It is not trying to replace Python. It is trying to remove the repetitive parts of writing Python desktop interfaces so developers can spend more time on behavior, architecture, and user experience — and slightly less time calculating whether a button should be 98 or 100 pixels wide.
-"# GuiBuilder" 
+> ⚠️ Don't publish a repository containing third-party code or assets under a license you don't have the rights to grant.
+
+---
+
+## Support & Contact
+
+Questions, bug reports, feature requests, or just want to show off the wildest dashboard you've built with the instrumentation widgets?
+
+📧 **Email:** [rahilkasimi@gmail.com](mailto:rahilkasimi@gmail.com)
+🐛 **Bugs / Features:** Open a GitHub Issue on this repository (see [Troubleshooting](#troubleshooting) for what to include)
+
+---
+
+## Credits & Technology Stack
+
+| Technology | Role |
+|---|---|
+| **Python** | Application language |
+| **Tkinter / ttk** | GUI toolkit for both the builder itself and every generated app |
+| **Pillow** | Image loading and thumbnail handling |
+| **pandas** | Table/Excel/CSV data workflows |
+| **openpyxl** | Excel workbook read/write engine |
+| **tkcalendar** | The Calendar element |
+| **PyInstaller** | Windows executable packaging |
+
+---
+
+### Final word
+
+The design philosophy behind GuiBuilder fits in one sentence:
+
+> **Make GUI layout fast and visual, while keeping the generated Python honest, readable, and entirely yours.**
+
+It isn't trying to replace Python, and it definitely isn't trying to replace *you*. It's trying to remove the repetitive, error-prone parts of building a Tkinter interface so you can spend your time on the logic that actually makes your application useful — and marginally less time deciding whether a button should be 98 or 100 pixels wide.
+
+**Happy building. 🛠️**
