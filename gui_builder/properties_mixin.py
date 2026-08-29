@@ -53,7 +53,77 @@ def _coerce_item_list(value):
 
 
 class PropertiesMixin:
+    def _group_ids(self):
+        ids = []
+        for elem in self.elements:
+            raw = str(elem.props.get("group_id", "") or "").strip()
+            if raw and raw not in ids:
+                ids.append(raw)
+        try:
+            return sorted(ids, key=lambda v: int(v))
+        except ValueError:
+            return sorted(ids)
+
+    def _group_options(self, include_create=False):
+        options = ["(None)"] + [f"Group {gid}" for gid in self._group_ids()]
+        if include_create:
+            options.append("(Create New Group)")
+        return options
+
+    def _group_id_from_display(self, value):
+        text = str(value or "").strip()
+        if text == "(None)":
+            return ""
+        if text == "(Create New Group)":
+            return None
+        if text.lower().startswith("group "):
+            return text[6:].strip()
+        return text
+
+    def _new_group_id(self):
+        used = set()
+        for elem in self.elements:
+            raw = str(elem.props.get("group_id", "") or "").strip()
+            if raw.isdigit():
+                used.add(int(raw))
+        gid = 1
+        while gid in used:
+            gid += 1
+        return str(gid)
+
+    def _group_elements(self, elements):
+        elems = [e for e in elements if e in self.elements]
+        if len(elems) < 2:
+            return None
+        gid = self._new_group_id()
+        for elem in elems:
+            elem.props["group_id"] = gid
+        self._schedule_save()
+        return gid
+
+    def _ungroup_elements(self, elements):
+        changed = False
+        for elem in elements:
+            if elem.props.pop("group_id", None) is not None:
+                changed = True
+        if changed:
+            self._schedule_save()
+        return changed
+
+    def _group_members(self, elem):
+        gid = str(elem.props.get("group_id", "") or "").strip()
+        if not gid:
+            return [elem]
+        return [e for e in self.elements if str(e.props.get("group_id", "") or "").strip() == gid]
+
     def _show_properties_multi(self):
+        """Show properties that can safely be edited across all selected elements.
+
+        Every visible editor row owns its own StringVar.  The previous implementation
+        accidentally reused the Group row's variable for Font/other rows, which could
+        cascade a font tuple into the next property and ultimately generate invalid
+        widget options (for example bg=("Segoe UI", 9)).
+        """
         for row in self.prop_rows:
             row["frame"].pack_forget()
             row["visible"] = False
@@ -62,12 +132,24 @@ class PropertiesMixin:
         )
 
         common_fields = [
+            ("group_id", "Group", "combobox"),
             ("font", "Font", "font"),
             ("fg", "Foreground", "color"),
             ("bg", "Background", "color"),
             ("width", "Width", "entry"),
             ("height", "Height", "entry"),
         ]
+
+        def current_value(field_key):
+            values = []
+            for elem in self.selected_elems:
+                if field_key == "width":
+                    values.append(elem.canvas_w)
+                elif field_key == "height":
+                    values.append(elem.canvas_h)
+                else:
+                    values.append(elem.props.get(field_key, ""))
+            return values[0] if values and all(v == values[0] for v in values) else ""
 
         row_index = 0
         for field_key, label, widget_type in common_fields:
@@ -76,86 +158,104 @@ class PropertiesMixin:
             row = self.prop_rows[row_index]
             row["label"].configure(text=label + " (All):")
             row["field_key"] = field_key
-
             self._clear_prop_row(row)
 
-            var = tk.StringVar(value="")
-
-            if widget_type in ("entry", "color"):
-                var.trace_add("write", lambda *args,
-                                              r=row: self._on_live_multi_prop_change(
-                    r
-                )
-                              )
+            initial = current_value(field_key)
+            if field_key == "group_id":
+                gid = str(initial or "").strip()
+                display = f"Group {gid}" if gid else "(None)"
+                var = tk.StringVar(value=display)
                 row["var"] = var
+                row["_trace_id"] = var.trace_add(
+                    "write", lambda *args, r=row: self._on_live_multi_prop_change(r)
+                )
+                combo = ttk.Combobox(
+                    row["control_frame"], textvariable=var,
+                    values=self._group_options(include_create=True),
+                    width=22, state="readonly"
+                )
+                combo.pack(fill=tk.X)
+                row["_shape"] = (field_key, "group_combo")
+                row["_combo_widget"] = combo
 
+            elif widget_type in ("entry", "color"):
+                var = tk.StringVar(value="" if initial is None else str(initial))
+                row["var"] = var
+                row["_trace_id"] = var.trace_add(
+                    "write", lambda *args, r=row: self._on_live_multi_prop_change(r)
+                )
                 if widget_type == "entry":
-                    tk.Entry(row["control_frame"], textvariable=var,
-                             width=24
-                             ).pack(fill=tk.X)
-                elif widget_type == "color":
+                    tk.Entry(row["control_frame"], textvariable=var, width=24).pack(fill=tk.X)
+                else:
                     frame = tk.Frame(row["control_frame"], bg=self._panel_bg)
                     frame.pack(fill=tk.X)
                     tk.Entry(frame, textvariable=var, width=20).pack(
                         side=tk.LEFT, fill=tk.X, expand=True
                     )
                     self._flat_button(
-                        frame, "Pick",
-                        lambda v=var: self._pick_color(v)
+                        frame, "Pick", lambda v=var: self._pick_color(v)
                     ).pack(side=tk.RIGHT)
                     rgb_lbl = tk.Label(
-                        row["control_frame"],
-                        text=self._rgb_label_text(var.get()),
+                        row["control_frame"], text=self._rgb_label_text(var.get()),
                         font=("Segoe UI", 10), fg=self._muted_fg,
                         bg=self._panel_bg, anchor="w"
                     )
                     rgb_lbl.pack(fill=tk.X, pady=(1, 0))
                     var.trace_add(
-                        "write",
-                        lambda *a, v=var, lbl=rgb_lbl: lbl.configure(
+                        "write", lambda *a, v=var, lbl=rgb_lbl: lbl.configure(
                             text=self._rgb_label_text(v.get())
                         )
                     )
 
             elif widget_type == "font":
+                parsed = _coerce_font_value(str(initial)) if initial not in (None, "") else ("Segoe UI", 9)
+                if not isinstance(parsed, tuple) or len(parsed) < 2:
+                    parsed = ("Segoe UI", 9)
+                family_var = tk.StringVar(value=str(parsed[0]))
+                try:
+                    size_value = int(float(parsed[1]))
+                except (TypeError, ValueError):
+                    size_value = 9
+                size_var = tk.StringVar(value=str(size_value))
+                var = tk.StringVar(value=str(parsed))
+                row["var"] = var
+
                 frame = tk.Frame(row["control_frame"], bg=self._panel_bg)
                 frame.pack(fill=tk.X)
-                family_var = tk.StringVar(value="Segoe UI")
-                size_var = tk.StringVar(value="9")
 
-                def update_font(
-                        *args, target_var=var, f_var=family_var,
-                        s_var=size_var
-                ):
-                    target_var.set(f"('{f_var.get()}', {s_var.get()})")
+                def update_font(*args, target_var=var, f_var=family_var, s_var=size_var,
+                                trace_row=row):
+                    try:
+                        size = int(s_var.get())
+                    except (TypeError, ValueError):
+                        size = 9
+                    target_var.set(repr((f_var.get(), size)))
 
-                family_var.trace_add("write", update_font)
-                size_var.trace_add("write", update_font)
-
+                family_trace = family_var.trace_add("write", update_font)
+                size_trace = size_var.trace_add("write", update_font)
+                var_trace = var.trace_add(
+                    "write", lambda *args, r=row: self._on_live_multi_prop_change(r)
+                )
+                row["_trace_id"] = var_trace
+                row["_font_aux_traces"] = [(family_var, family_trace), (size_var, size_trace)]
                 try:
                     families = sorted(list(tkfont.families()))
                 except Exception:
                     families = ["Arial", "Segoe UI"]
-
-                ttk.Combobox(frame, textvariable=family_var,
-                             values=families, width=18, state="readonly"
-                             ).pack(side=tk.LEFT, padx=(0, 2))
-                ttk.Combobox(frame, textvariable=size_var,
-                             values=[str(s) for s in
-                                     [8, 9, 10, 11, 12, 14, 16, 18, 20,
-                                      24]], width=5, state="readonly"
-                             ).pack(side=tk.LEFT)
-
-                var.trace_add("write", lambda *args,
-                                              r=row: self._on_live_multi_prop_change(
-                    r
-                )
-                              )
-                row["var"] = var
+                ttk.Combobox(
+                    frame, textvariable=family_var, values=families,
+                    width=18, state="readonly"
+                ).pack(side=tk.LEFT, padx=(0, 2))
+                ttk.Combobox(
+                    frame, textvariable=size_var,
+                    values=[str(v) for v in [8, 9, 10, 11, 12, 14, 16, 18, 20, 24]],
+                    width=5, state="readonly"
+                ).pack(side=tk.LEFT)
 
             row["frame"].pack(fill=tk.X, pady=2)
             row["visible"] = True
             row_index += 1
+
 
     def _on_live_multi_prop_change(self, row):
         if len(self.selected_elems) <= 1 or not row.get("visible"):
@@ -165,6 +265,22 @@ class PropertiesMixin:
         if not field_key or var is None:
             return
         value = var.get()
+        if field_key == "group_id":
+            if value == "(Create New Group)":
+                gid = self._group_elements(self.selected_elems)
+                self._show_properties_multi()
+                if gid:
+                    self._update_status(f"Grouped {len(self.selected_elems)} elements as Group {gid}.")
+                return
+            gid = self._group_id_from_display(value) or ""
+            for elem in self.selected_elems:
+                elem.props["group_id"] = gid if gid else ""
+                if not gid:
+                    elem.props.pop("group_id", None)
+                self.renderer.redraw_element(elem)
+            self._update_code()
+            self._schedule_save()
+            return
         if not value:
             return
 
@@ -203,6 +319,7 @@ class PropertiesMixin:
         row["_shape"] = None
         row["_trace_id"] = None
         row["_combo_widget"] = None
+        row["_font_aux_traces"] = []
 
     def _set_var_quiet(self, var: tk.StringVar, value: str, row: dict,
                        callback) -> None:
@@ -222,6 +339,57 @@ class PropertiesMixin:
         var.set(value)
         row["_trace_id"] = var.trace_add("write", callback)
 
+    def _scrollbar_target_options(self, scrollbar_elem: DesignElement):
+        """Return (display_options, display_to_id) for a Scrollbar target.
+
+        Only widgets that expose Tk's xview/yview API and are intentionally
+        supported by the designer are listed. IDs are persisted instead of
+        captions so duplicate/changed text cannot break the relationship.
+        """
+        options = ["(None)"]
+        display_to_id = {"(None)": ""}
+        for candidate in self.elements:
+            if candidate is scrollbar_elem:
+                continue
+            if candidate.elem_type not in ("Text", "Canvas"):
+                continue
+            display = f"{candidate.elem_type} [id={candidate.elem_id}]"
+            options.append(display)
+            display_to_id[display] = str(candidate.elem_id)
+        return options, display_to_id
+
+    def _instrumentation_source_options(self, led_elem: DesignElement):
+        """Return readable target options for an LED Indicator binding."""
+        options = ["(None)"]
+        display_to_id = {"(None)": ""}
+        supported = {"PushButton", "RadioButton", "Radiobutton", "Checkbutton", "Button"}
+        for candidate in self.elements:
+            if candidate is led_elem or candidate.elem_type not in supported:
+                continue
+            display = f"{candidate.elem_type} [id={candidate.elem_id}]"
+            options.append(display)
+            display_to_id[display] = str(candidate.elem_id)
+        return options, display_to_id
+
+    def _instrumentation_source_display(self, target_value, display_to_id):
+        target_id = str(target_value).strip()
+        if not target_id:
+            return "(None)"
+        for display, elem_id in display_to_id.items():
+            if str(elem_id) == target_id:
+                return display
+        return "(None)"
+
+    def _scrollbar_target_display(self, target_value, display_to_id):
+        """Resolve a persisted target ID to the readable dropdown label."""
+        target_id = str(target_value).strip()
+        if not target_id:
+            return "(None)"
+        for display, elem_id in display_to_id.items():
+            if str(elem_id) == target_id:
+                return display
+        return "(None)"
+
     def _show_properties(self, elem: Optional[DesignElement]):
         for row in self.prop_rows:
             row["frame"].pack_forget()
@@ -238,7 +406,8 @@ class PropertiesMixin:
             text=f"{spec['display']} [id={elem.elem_id}]"
         )
         self.prop_context_var.set(self._parent_description(elem))
-        fields = PROPERTY_FIELDS.get(elem.elem_type, [])
+        fields = list(PROPERTY_FIELDS.get(elem.elem_type, []))
+        fields.append(("group_id", "Group", "combobox"))
         row_index = 0
 
         for fielddef in fields:
@@ -270,6 +439,21 @@ class PropertiesMixin:
                 options = [str(i + 1) for i in range(
                     max(1, len(elem.props.get("tabs", [])))
                 )]
+            elif field_key == "target_widget" and elem.elem_type == "Scrollbar":
+                options, target_map = self._scrollbar_target_options(elem)
+                row["_target_map"] = target_map
+                value = self._scrollbar_target_display(
+                    elem.props.get("target_widget", ""), target_map
+                )
+            elif field_key == "group_id":
+                options = self._group_options(include_create=True)
+                value = "(None)" if not str(elem.props.get("group_id", "") or "").strip() else f"Group {elem.props.get('group_id')}"
+            elif field_key == "source_widget" and elem.elem_type == "LEDIndicator":
+                options, source_map = self._instrumentation_source_options(elem)
+                row["_source_map"] = source_map
+                value = self._instrumentation_source_display(
+                    elem.props.get("source_widget", ""), source_map
+                )
             else:
                 value = elem.props.get(field_key, "")
 
@@ -294,7 +478,10 @@ class PropertiesMixin:
                     (elem.elem_type == "Table" and field_key == "file") or
                     (elem.elem_type == "Image" and field_key == "image_path") or
                     (field_key == "tabs" and elem.elem_type == "Notebook") or
-                    (field_key in ("items", "values") and elem.elem_type in ("Listbox", "Combobox"))
+                    (field_key in ("items", "values") and elem.elem_type in ("Listbox", "Combobox")) or
+                    (field_key == "source_widget" and elem.elem_type == "LEDIndicator") or
+                    (field_key == "target_widget" and elem.elem_type == "Scrollbar") or
+                    field_key == "group_id"
             )
             poolable = (not is_special) and widget_type in ("entry", "combobox")
             shape = (field_key, widget_type) if poolable else None
@@ -368,7 +555,65 @@ class PropertiesMixin:
                 row_index += 1
                 continue
 
-            if field_key in ("items", "values") and elem.elem_type in ("Listbox", "Combobox"):
+            if field_key == "group_id":
+                var.trace_add("write", lambda *args, r=row: self._on_live_prop_change(r))
+                row["var"] = var
+                combo = ttk.Combobox(row["control_frame"], textvariable=var,
+                                     values=[str(o) for o in options], width=22, state="readonly")
+                combo.pack(fill=tk.X)
+                row["_shape"] = (field_key, "group_combo")
+                row["_trace_id"] = var.trace_info()[0][0] if var.trace_info() else None
+                row["_combo_widget"] = combo
+                helper_lbl = tk.Label(row["control_frame"], text="Use Group Selected from the right-click menu or another multi-selection.", font=("Segoe UI", 8), fg=self._muted_fg, bg=self._panel_bg, anchor="w")
+                helper_lbl.pack(fill=tk.X, pady=(1, 0))
+            elif field_key == "target_widget" and elem.elem_type == "Scrollbar":
+                target_map = row.get("_target_map", {"(None)": ""})
+                trace_id = var.trace_add(
+                    "write",
+                    lambda *args, r=row: self._on_live_prop_change(r)
+                )
+                row["var"] = var
+                combo = ttk.Combobox(
+                    row["control_frame"], textvariable=var,
+                    values=[str(o) for o in (options or [])],
+                    width=22, state="readonly"
+                )
+                combo.pack(fill=tk.X)
+                row["_shape"] = (field_key, "target_widget")
+                row["_trace_id"] = trace_id
+                row["_combo_widget"] = combo
+                row["_target_map"] = target_map
+                helper_lbl = tk.Label(
+                    row["control_frame"],
+                    text="Text/Canvas only; use Orientation to choose x/y scrolling",
+                    font=("Segoe UI", 8), fg=self._muted_fg,
+                    bg=self._panel_bg, anchor="w"
+                )
+                helper_lbl.pack(fill=tk.X, pady=(1, 0))
+            elif field_key == "source_widget" and elem.elem_type == "LEDIndicator":
+                source_map = row.get("_source_map", {"(None)": ""})
+                trace_id = var.trace_add(
+                    "write", lambda *args, r=row: self._on_live_prop_change(r)
+                )
+                row["var"] = var
+                combo = ttk.Combobox(
+                    row["control_frame"], textvariable=var,
+                    values=[str(o) for o in (options or [])],
+                    width=22, state="readonly"
+                )
+                combo.pack(fill=tk.X)
+                row["_shape"] = (field_key, "instrumentation_source")
+                row["_trace_id"] = trace_id
+                row["_combo_widget"] = combo
+                row["_source_map"] = source_map
+                helper_lbl = tk.Label(
+                    row["control_frame"],
+                    text="Mirror/toggle a button or selection state",
+                    font=("Segoe UI", 8), fg=self._muted_fg,
+                    bg=self._panel_bg, anchor="w"
+                )
+                helper_lbl.pack(fill=tk.X, pady=(1, 0))
+            elif field_key in ("items", "values") and elem.elem_type in ("Listbox", "Combobox"):
                 self._build_item_collection_editor(row, elem, field_key, _coerce_item_list(value))
             elif field_key == "tabs" and elem.elem_type == "Notebook":
                 var.trace_add("write",
@@ -700,6 +945,23 @@ class PropertiesMixin:
         row["visible"] = True
         row_index += 1
 
+        row = self.prop_rows[row_index]
+        row["label"].configure(text="Locked:")
+        self._clear_prop_row(row)
+        var_locked = tk.StringVar(
+            value="Yes" if getattr(self, "WINDOW_LOCKED", False) else "No"
+        )
+        ttk.Combobox(row["control_frame"], textvariable=var_locked,
+                     values=["Yes", "No"], width=22, state="readonly"
+                     ).pack(fill=tk.X)
+        var_locked.trace_add(
+            "write",
+            lambda *a, v=var_locked: self._apply_window_lock_from_props(v)
+        )
+        row["frame"].pack(fill=tk.X, pady=2)
+        row["visible"] = True
+        row_index += 1
+
     def _apply_window_state_from_props(self, var_state):
         self.WINDOW_STATE = var_state.get()
         # Unlike width/height/background, the window-state block is a
@@ -710,6 +972,13 @@ class PropertiesMixin:
         # _update_code_for_canvas_change patches geometry/bg) isn't worth
         # the risk of corrupting the script. A full regenerate is cheap
         # and this field changes rarely, so just do that instead.
+        self._invalidate_full_code()
+        self._update_code()
+        self._schedule_save()
+
+    def _apply_window_lock_from_props(self, var_locked):
+        value = str(var_locked.get()).strip().lower()
+        self.WINDOW_LOCKED = value in ("yes", "true", "1", "on")
         self._invalidate_full_code()
         self._update_code()
         self._schedule_save()
@@ -824,7 +1093,28 @@ class PropertiesMixin:
 
         value = var.get()
 
-        if field_key == "orient" and elem.elem_type in ("Scale", "Separator",
+        if field_key == "group_id":
+            if value == "(Create New Group)":
+                gid = self._new_group_id()
+                elem.props["group_id"] = gid
+                self._show_properties(elem)
+            else:
+                gid = self._group_id_from_display(value) or ""
+                if gid:
+                    elem.props["group_id"] = gid
+                else:
+                    elem.props.pop("group_id", None)
+            self.renderer.redraw_element(elem)
+            self._update_code()
+            self._schedule_save()
+            return
+        if field_key == "target_widget" and elem.elem_type == "Scrollbar":
+            target_map = row.get("_target_map", {})
+            elem.props["target_widget"] = str(target_map.get(value, ""))
+        elif field_key == "source_widget" and elem.elem_type == "LEDIndicator":
+            source_map = row.get("_source_map", {})
+            elem.props["source_widget"] = str(source_map.get(value, ""))
+        elif field_key == "orient" and elem.elem_type in ("Scale", "Separator",
                                                         "Progressbar",
                                                         "Scrollbar"):
             if value == "vertical" and elem.canvas_w > elem.canvas_h:
@@ -846,6 +1136,9 @@ class PropertiesMixin:
             elem.props["font"] = _coerce_font_value(value)
         elif field_key in ("values", "items"):
             elem.props[field_key] = _coerce_item_list(value)
+        elif field_key in ("target_widget", "source_widget") and elem.elem_type in ("Scrollbar", "LEDIndicator"):
+            # Already normalized above through the field-specific ID map.
+            pass
         elif elem.elem_type == "Notebook" and field_key == "tabs":
             tabs = [v.strip() for v in value.split(",") if v.strip()] or [
                 "Tab 1"]
@@ -910,6 +1203,20 @@ class PropertiesMixin:
             self._update_code()
 
         if not self.full_code:
+            _safe_invalidate_and_update()
+            return
+
+        # Relationship bindings and custom instrumentation widgets are emitted
+        # as shared generated code, so property edits must rebuild that block
+        # rather than attempting a local line splice.
+        instrumentation_types = {
+            "PushButton", "RadioButton", "LEDDigit", "LEDDisplay",
+            "LEDIndicator", "Gauge", "MeasurementDisplay",
+        }
+        if elem.elem_type in instrumentation_types:
+            _safe_invalidate_and_update()
+            return
+        if elem.elem_type == "Scrollbar" and "target_widget" in elem.props:
             _safe_invalidate_and_update()
             return
 

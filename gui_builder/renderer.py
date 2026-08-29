@@ -29,6 +29,18 @@ class CanvasRenderer:
         except tk.TclError:
             return fallback
 
+    def _apply_brightness(self, color_name, brightness):
+        text = str(color_name or "")
+        if len(text) == 7 and text.startswith("#"):
+            try:
+                factor = max(0.0, min(100.0, float(brightness))) / 100.0
+                rgb = [int(text[i:i+2], 16) for i in (1, 3, 5)]
+                rgb = [max(0, min(255, int(round(v * factor)))) for v in rgb]
+                return "#%02X%02X%02X" % tuple(rgb)
+            except (TypeError, ValueError):
+                pass
+        return text
+
     def draw_grid(self, width: int, height: int) -> None:
         self.canvas.delete("grid")
         z = getattr(self, "zoom", 1.0)
@@ -61,9 +73,12 @@ class CanvasRenderer:
 
         self.erase_element(elem)
 
-        draw_func = getattr(self, f"_draw_{elem.elem_type.lower()}",
-                             self._draw_fallback
-                             )
+        draw_method_name = f"_draw_{elem.elem_type.lower()}"
+        if elem.elem_type == "RadioButton":
+            # The legacy "Radiobutton" element retains its existing renderer;
+            # the new RadioButton element uses the richer square/round renderer.
+            draw_method_name = "_draw_radiobuttonplus"
+        draw_func = getattr(self, draw_method_name, self._draw_fallback)
         draw_func(elem, x, y, w, h, bg, fg, font, outline, width_outline)
 
         # The design canvas always shows every element regardless of its
@@ -338,6 +353,236 @@ class CanvasRenderer:
                                       outline="#78909C",
                                       tags=("element", f"elem_{elem.elem_id}")
                                       )
+
+    _SEGMENTS = {
+        "0": "abcdef", "1": "bc", "2": "abdeg", "3": "abcdg",
+        "4": "bcfg", "5": "acdfg", "6": "acdefg", "7": "abc",
+        "8": "abcdefg", "9": "abcdfg", "-": "g", " ": "",
+    }
+
+    def _draw_pushbutton(self, elem, x, y, w, h, bg, fg, font, outline, outline_w):
+        shape = str(elem.props.get("shape", "Square")).strip().lower()
+        style = str(elem.props.get("style", "Mechanical")).strip().lower()
+        active = str(elem.props.get("default_state", "Off")).strip().lower() in ("on", "yes", "1", "true")
+        fill = self._get_valid_color(
+            elem.props.get("active_bg") if active else bg,
+            bg if not active else "#0D47A1"
+        )
+        if shape == "round":
+            self.canvas.create_oval(
+                x + 2, y + 2, x + w - 2, y + h - 2,
+                fill=fill, outline=outline, width=outline_w,
+                tags=("element", f"elem_{elem.elem_id}")
+            )
+            self.canvas.create_oval(
+                x + 7, y + 7, x + w - 7, y + h - 7,
+                outline="#FFFFFF", width=1,
+                tags=("element", f"elem_{elem.elem_id}")
+            )
+        elif style == "mechanical":
+            self._draw_raised_rect(elem, x, y, w, h, fill, outline, outline_w)
+            if not active:
+                self.canvas.create_line(x + 4, y + 3, x + w - 5, y + 3,
+                                        fill="#FFFFFF", width=1,
+                                        tags=("element", f"elem_{elem.elem_id}"))
+        else:
+            self._draw_flat_rect(elem, x, y, w, h, fill, outline, outline_w)
+        self._render_text_on_canvas(elem, x, y, w, h, elem.display_label, fg, font)
+
+    def _draw_radiobuttonplus(self, elem, x, y, w, h, bg, fg, font, outline, outline_w):
+        self._draw_flat_rect(elem, x, y, w, h, bg, outline, outline_w)
+        cx, cy = x + 13, y + h // 2
+        selected = str(elem.props.get("selected", "No")).strip().lower() in ("yes", "1", "true")
+        shape = str(elem.props.get("shape", "Round")).strip().lower()
+        active_bg = self._get_valid_color(elem.props.get("active_bg"), "#1976D2")
+        if shape == "square":
+            self.canvas.create_rectangle(cx - 7, cy - 7, cx + 7, cy + 7,
+                                          outline="#777777", fill=bg, width=1,
+                                          tags=("element", f"elem_{elem.elem_id}"))
+            if selected:
+                self.canvas.create_rectangle(cx - 4, cy - 4, cx + 4, cy + 4,
+                                              fill=active_bg, outline=active_bg,
+                                              tags=("element", f"elem_{elem.elem_id}"))
+        else:
+            self.canvas.create_oval(cx - 7, cy - 7, cx + 7, cy + 7,
+                                    outline="#777777", fill=bg, width=1,
+                                    tags=("element", f"elem_{elem.elem_id}"))
+            if selected:
+                self.canvas.create_oval(cx - 4, cy - 4, cx + 4, cy + 4,
+                                        fill=active_bg, outline=active_bg,
+                                        tags=("element", f"elem_{elem.elem_id}"))
+        self._render_text_on_canvas(elem, x + 25, y, w - 25, h,
+                                    elem.display_label, fg, font, anchor="w")
+
+    def _draw_leddigit(self, elem, x, y, w, h, bg, fg, font, outline, outline_w):
+        self._draw_leddisplay_common(elem, x, y, w, h, bg, outline, outline_w, digits=1)
+
+    def _draw_leddisplay(self, elem, x, y, w, h, bg, fg, font, outline, outline_w):
+        try:
+            digits = max(1, int(elem.props.get("digits", 3) or 3))
+        except (TypeError, ValueError):
+            digits = 3
+        self._draw_leddisplay_common(elem, x, y, w, h, bg, outline, outline_w, digits=digits)
+
+    def _draw_leddisplay_common(self, elem, x, y, w, h, bg, outline, outline_w, digits=1):
+        self._draw_flat_rect(elem, x, y, w, h, bg, outline, outline_w)
+        value = str(elem.props.get("value", "0")).strip()
+        if elem.elem_type == "LEDDigit":
+            chars = [value[-1:] or "0"]
+        else:
+            leading = str(elem.props.get("leading_zeros", "No")).strip().lower() in ("yes", "1", "true")
+            if leading and value.replace("-", "").isdigit():
+                sign = "-" if value.startswith("-") else ""
+                raw = value[1:] if sign else value
+                value = sign + raw.zfill(max(1, digits - (1 if sign else 0)))
+            chars = list(value[-digits:].rjust(digits))
+        led_color = self._apply_brightness(
+            self._get_valid_color(elem.props.get("color"), "#00FF66"),
+            elem.props.get("brightness", 100)
+        )
+        off_color = self._get_valid_color(elem.props.get("off_color"), "#16351F")
+        margin = max(3, int(w * 0.02))
+        try:
+            gap = max(0, int(elem.props.get("digit_gap", 12) or 12))
+        except (TypeError, ValueError):
+            gap = 12
+        if len(chars) > 1:
+            min_digit_w = 8
+            max_gap = max(0, int((w - 2 * margin - min_digit_w * len(chars)) / (len(chars) - 1)))
+            gap = min(gap, max_gap)
+        digit_w = max(8, (w - 2 * margin - gap * max(0, len(chars) - 1)) / max(1, len(chars)))
+        digit_h = max(12, h - 2 * margin)
+        try:
+            seg_w = max(1, int(elem.props.get("segment_width", 4) or 4))
+        except (TypeError, ValueError):
+            seg_w = 4
+        for i, char in enumerate(chars):
+            dx = x + margin + i * (digit_w + gap)
+            active = self._SEGMENTS.get(char.upper(), "")
+            t = max(1, min(seg_w, int(min(digit_w, digit_h) * 0.16)))
+            boxes = {
+                "a": (dx + t, y + margin, dx + digit_w - t, y + margin + t),
+                "g": (dx + t, y + h / 2 - t / 2, dx + digit_w - t, y + h / 2 + t / 2),
+                "d": (dx + t, y + h - margin - t, dx + digit_w - t, y + h - margin),
+                "f": (dx, y + margin + t, dx + t, y + h / 2 - t / 2),
+                "b": (dx + digit_w - t, y + margin + t, dx + digit_w, y + h / 2 - t / 2),
+                "e": (dx, y + h / 2 + t / 2, dx + t, y + h - margin - t),
+                "c": (dx + digit_w - t, y + h / 2 + t / 2, dx + digit_w, y + h - margin - t),
+            }
+            for seg, box in boxes.items():
+                color = led_color if seg in active else off_color
+                self.canvas.create_rectangle(*box, fill=color, outline=color,
+                                              width=max(1, seg_w),
+                                              tags=("element", f"elem_{elem.elem_id}"))
+
+    def _draw_ledindicator(self, elem, x, y, w, h, bg, fg, font, outline, outline_w):
+        self._draw_flat_rect(elem, x, y, w, h, bg, outline, outline_w)
+        state = str(elem.props.get("state", "Off")).strip().lower() in ("on", "yes", "1", "true")
+        color = self._get_valid_color(
+            elem.props.get("on_color") if state else elem.props.get("off_color"),
+            "#00FF66" if state else "#16351F"
+        )
+        if state:
+            color = self._apply_brightness(color, elem.props.get("brightness", 100))
+        d = max(8, min(w, h) - 4)
+        cx, cy = x + w / 2, y + h / 2
+        if state and str(elem.props.get("glow", "Yes")).strip().lower() in ("yes", "1", "true"):
+            for inset in (0, 3, 5):
+                self.canvas.create_oval(cx - d / 2 - inset, cy - d / 2 - inset,
+                                        cx + d / 2 + inset, cy + d / 2 + inset,
+                                        outline=color, width=1,
+                                        tags=("element", f"elem_{elem.elem_id}"))
+        shape = str(elem.props.get("shape", "Round")).strip().lower()
+        if shape == "square":
+            self.canvas.create_rectangle(cx - d / 2, cy - d / 2, cx + d / 2, cy + d / 2,
+                                          fill=color, outline="#555555", width=1,
+                                          tags=("element", f"elem_{elem.elem_id}"))
+        else:
+            self.canvas.create_oval(cx - d / 2, cy - d / 2, cx + d / 2, cy + d / 2,
+                                    fill=color, outline="#555555", width=1,
+                                    tags=("element", f"elem_{elem.elem_id}"))
+
+    def _draw_gauge(self, elem, x, y, w, h, bg, fg, font, outline, outline_w):
+        self._draw_flat_rect(elem, x, y, w, h, bg, outline, outline_w)
+        try:
+            mn, mx = float(elem.props.get("min_value", 0)), float(elem.props.get("max_value", 100))
+            val = float(elem.props.get("value", 50))
+            start = float(elem.props.get("start_angle", 225))
+            end = float(elem.props.get("end_angle", -45))
+            ticks = max(0, int(elem.props.get("ticks", 10) or 10))
+            thickness = max(1, int(elem.props.get("thickness", 8) or 8))
+        except (TypeError, ValueError):
+            mn, mx, val, start, end, ticks, thickness = 0, 100, 50, 225, -45, 10, 8
+        size = max(20, min(w, h) - 20)
+        x1, y1 = x + (w - size) / 2, y + (h - size) / 2
+        x2, y2 = x1 + size, y1 + size
+        track = self._get_valid_color(elem.props.get("track_color"), "#D9D9D9")
+        arc = self._get_valid_color(elem.props.get("arc_color"), "#1976D2")
+        needle = self._get_valid_color(elem.props.get("needle_color"), "#E53935")
+        tick = self._get_valid_color(elem.props.get("tick_color"), "#555555")
+        extent = end - start
+        self.canvas.create_arc(x1, y1, x2, y2, start=start, extent=extent,
+                               style="arc", outline=track, width=thickness,
+                               tags=("element", f"elem_{elem.elem_id}"))
+        ratio = 0 if mx == mn else max(0, min(1, (val - mn) / (mx - mn)))
+        ang = start + ratio * extent
+        self.canvas.create_arc(x1, y1, x2, y2, start=start, extent=ang-start,
+                               style="arc", outline=arc, width=thickness,
+                               tags=("element", f"elem_{elem.elem_id}"))
+        cx, cy = x + w / 2, y + h / 2
+        import math
+        for i in range(ticks + 1):
+            r = i / ticks if ticks else 0
+            a = start + r * extent
+            rad = math.radians(a)
+            ro, ri = size / 2 - 2, size / 2 - thickness - 8
+            ox, oy = cx + ro * math.cos(rad), cy - ro * math.sin(rad)
+            ix, iy = cx + ri * math.cos(rad), cy - ri * math.sin(rad)
+            self.canvas.create_line(ix, iy, ox, oy, fill=tick, width=1,
+                                    tags=("element", f"elem_{elem.elem_id}"))
+        rad = math.radians(ang)
+        nl = size / 2 - 15
+        nx, ny = cx + nl * math.cos(rad), cy - nl * math.sin(rad)
+        self.canvas.create_line(cx, cy, nx, ny, fill=needle, width=max(2, thickness // 2),
+                                tags=("element", f"elem_{elem.elem_id}"))
+        self.canvas.create_oval(cx - 4, cy - 4, cx + 4, cy + 4, fill=needle, outline="",
+                                tags=("element", f"elem_{elem.elem_id}"))
+        if str(elem.props.get("show_value", "Yes")).strip().lower() in ("yes", "1", "true"):
+            unit = str(elem.props.get("unit", ""))
+            self.canvas.create_text(cx, y + h * 0.80, text=f"{val:g}{unit}",
+                                    fill=tick, font=("Segoe UI", 8, "bold"),
+                                    tags=("element", f"elem_{elem.elem_id}"))
+
+    def _draw_measurementdisplay(self, elem, x, y, w, h, bg, fg, font, outline, outline_w):
+        self._draw_flat_rect(elem, x, y, w, h, bg, outline, outline_w)
+        label = str(elem.props.get("label", "Measurement"))
+        value = str(elem.props.get("value", "0"))
+        unit = str(elem.props.get("unit", ""))
+        prefix = str(elem.props.get("prefix", ""))
+        suffix = str(elem.props.get("suffix", ""))
+        secondary = str(elem.props.get("secondary_text", ""))
+        value_color = self._get_valid_color(elem.props.get("color"), "#1976D2")
+        secondary_color = self._get_valid_color(elem.props.get("secondary_color"), "#666666")
+        style = str(elem.props.get("style", "Modern")).strip().lower()
+        align = str(elem.props.get("align", "center")).strip().lower()
+        if align == "left": anchor, tx = "w", x + 7
+        elif align == "right": anchor, tx = "e", x + w - 7
+        else: anchor, tx = "center", x + w / 2
+        self.canvas.create_text(tx, y + 12, anchor=anchor, text=label,
+                                fill=secondary_color, font=("Segoe UI", max(7, min(11, int(h * .13))), "bold"),
+                                tags=("element", f"elem_{elem.elem_id}"))
+        display_value = f"{prefix}{value}{suffix}"
+        value_font = ("Consolas", max(14, int(h * .34)), "bold") if style == "led" else ("Segoe UI", max(14, int(h * .40)), "bold")
+        self.canvas.create_text(tx, y + h * .53, anchor="center", text=display_value,
+                                fill=value_color, font=value_font,
+                                tags=("element", f"elem_{elem.elem_id}"))
+        self.canvas.create_text(x + w / 2, y + h * .76, text=unit,
+                                fill=secondary_color, font=("Segoe UI", max(8, int(h * .17))),
+                                tags=("element", f"elem_{elem.elem_id}"))
+        if secondary:
+            self.canvas.create_text(x + w / 2, y + h - 7, anchor="s", text=secondary,
+                                    fill=secondary_color, font=("Segoe UI", max(7, int(h * .11))),
+                                    tags=("element", f"elem_{elem.elem_id}"))
 
     def _draw_frame(self, elem, x, y, w, h, bg, fg, font, outline, outline_w):
         relief = elem.props.get("relief", "groove")

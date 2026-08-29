@@ -422,7 +422,8 @@ class CanvasMixin:
                         and len(self.selected_elems) > 1
                 )
                 if not already_in_group:
-                    self._select_element(clicked, clear=not ctrl_held)
+                    group_members = self._group_members(clicked) if not ctrl_held else [clicked]
+                    self._select_elements(group_members if len(group_members) > 1 else [clicked], "Selected group" if len(group_members) > 1 else "Selected")
                 self.drag_mode = "move"
                 self.drag_elem = clicked
                 self.mouse_down_pos = (x, y)
@@ -478,6 +479,12 @@ class CanvasMixin:
             if self.drag_mode != "select_box_scoped" or not self.mouse_down_pos:
                 return "break"
             mx, my = self._logical_xy(event)
+            if self.mouse_down_pos and abs(mx - self.mouse_down_pos[0]) <= 3 and abs(my - self.mouse_down_pos[1]) <= 3:
+                if self.selection_box_id:
+                    self.canvas.delete(self.selection_box_id)
+                    self.selection_box_id = None
+                self._reset_drag_state()
+                return self._show_canvas_context_menu(event)
             x1, y1 = min(self.mouse_down_pos[0], mx), min(self.mouse_down_pos[1], my)
             x2, y2 = max(self.mouse_down_pos[0], mx), max(self.mouse_down_pos[1], my)
             scoped = self._elements_in_container(self.selection_scope_id)
@@ -838,6 +845,138 @@ class CanvasMixin:
             else:
                 self._show_properties(None)
 
+        def _show_canvas_context_menu(self, event):
+            x, y = self._logical_xy(event)
+            clicked = self._find_element_at(x, y)
+            if clicked is not None:
+                if clicked not in self.selected_elems:
+                    self._select_elements(self._group_members(clicked), "Selected group" if len(self._group_members(clicked)) > 1 else "Selected")
+                target = clicked
+            else:
+                target = None
+
+            menu = tk.Menu(self.root, tearoff=0)
+            count = len(self.selected_elems)
+            elems = list(self.selected_elems)
+
+            if target is not None:
+                menu.add_command(label="Edit Code", command=lambda: self._open_code_editor(target))
+                menu.add_command(label="Select Group" if str(target.props.get("group_id", "")) else "Select Element",
+                                  command=lambda: self._select_elements(self._group_members(target), "Selected group") if str(target.props.get("group_id", "")) else self._select_elements([target], "Selected"))
+                menu.add_separator()
+
+                if target.elem_type in ("LEDDigit", "LEDDisplay"):
+                    menu.add_command(label="Set Display Value…", command=lambda: self._context_set_display_value(target))
+                elif target.elem_type == "Gauge":
+                    menu.add_command(label="Set Gauge Value…", command=lambda: self._context_set_gauge_value(target))
+                elif target.elem_type == "LEDIndicator":
+                    menu.add_command(label="Toggle LED", command=lambda: self._context_toggle_led(target))
+                elif target.elem_type == "PushButton":
+                    menu.add_command(label="Toggle Button State", command=lambda: self._context_toggle_button(target))
+                elif target.elem_type in ("RadioButton", "Radiobutton"):
+                    menu.add_command(label="Set Selected", command=lambda: self._context_select_radio(target))
+                elif target.elem_type in CONTAINER_TYPES:
+                    menu.add_command(label="Select Children", command=lambda: self._select_elements(self._elements_in_container(target.elem_id), "Selected container children"))
+
+                menu.add_separator()
+                visible = str(target.props.get("visible", "yes")).strip().lower() not in ("no", "0", "false")
+                menu.add_command(label="Hide" if visible else "Show", command=lambda: self._context_toggle_visible(target))
+
+            menu.add_command(label="Copy", command=self._copy_elements, state=(tk.NORMAL if elems else tk.DISABLED))
+            menu.add_command(label="Paste", command=self._paste_elements, state=(tk.NORMAL if self.clipboard else tk.DISABLED))
+            menu.add_command(label="Delete", command=self._delete_selected, state=(tk.NORMAL if elems else tk.DISABLED))
+            menu.add_separator()
+            if count >= 2:
+                menu.add_command(label="Group Selected", command=self._context_group_selected)
+            else:
+                menu.add_command(label="Group Selected", command=self._context_group_selected, state=tk.DISABLED)
+            grouped = any(str(e.props.get("group_id", "") or "").strip() for e in elems)
+            menu.add_command(label="Ungroup Selected", command=self._context_ungroup_selected, state=(tk.NORMAL if grouped else tk.DISABLED))
+            menu.add_separator()
+            menu.add_command(label="Bring to Front", command=self._context_bring_front, state=(tk.NORMAL if elems else tk.DISABLED))
+            menu.add_command(label="Send to Back", command=self._context_send_back, state=(tk.NORMAL if elems else tk.DISABLED))
+            menu.tk_popup(event.x_root, event.y_root)
+
+        def _context_group_selected(self):
+            if len(self.selected_elems) < 2:
+                return
+            gid = self._group_elements(self.selected_elems)
+            if gid:
+                self._show_properties_multi()
+                self._update_status(f"Grouped {len(self.selected_elems)} elements as Group {gid}.")
+
+        def _context_ungroup_selected(self):
+            if self._ungroup_elements(self.selected_elems):
+                for elem in self.selected_elems:
+                    self.renderer.redraw_element(elem)
+                self._show_properties_multi() if len(self.selected_elems) > 1 else self._show_properties(self.selected_elems[0])
+                self._update_status("Selection ungrouped.")
+
+        def _context_toggle_visible(self, elem):
+            current = str(elem.props.get("visible", "yes")).strip().lower() not in ("no", "0", "false")
+            elem.props["visible"] = "No" if current else "Yes"
+            self.renderer.redraw_element(elem)
+            self._update_code()
+            self._show_properties(elem)
+            self._schedule_save()
+
+        def _context_set_display_value(self, elem):
+            value = simpledialog.askstring("LED Display Value", "Enter display value:", initialvalue=str(elem.props.get("value", "0")), parent=self.root)
+            if value is not None:
+                elem.props["value"] = value
+                self.renderer.redraw_element(elem)
+                self._update_code()
+                self._show_properties(elem)
+                self._schedule_save()
+
+        def _context_set_gauge_value(self, elem):
+            value = simpledialog.askfloat("Gauge Value", "Enter gauge value:", initialvalue=float(elem.props.get("value", 50)), parent=self.root)
+            if value is not None:
+                elem.props["value"] = value
+                self.renderer.redraw_element(elem)
+                self._update_code()
+                self._show_properties(elem)
+                self._schedule_save()
+
+        def _context_toggle_led(self, elem):
+            on = str(elem.props.get("state", "Off")).strip().lower() in ("on", "yes", "1", "true")
+            elem.props["state"] = "Off" if on else "On"
+            self.renderer.redraw_element(elem)
+            self._update_code()
+            self._show_properties(elem)
+            self._schedule_save()
+
+        def _context_toggle_button(self, elem):
+            on = str(elem.props.get("default_state", "Off")).strip().lower() in ("on", "yes", "1", "true")
+            elem.props["default_state"] = "Off" if on else "On"
+            self.renderer.redraw_element(elem)
+            self._update_code()
+            self._show_properties(elem)
+            self._schedule_save()
+
+        def _context_select_radio(self, elem):
+            elem.props["selected"] = "Yes"
+            self.renderer.redraw_element(elem)
+            self._update_code()
+            self._show_properties(elem)
+            self._schedule_save()
+
+        def _context_bring_front(self):
+            for elem in self.selected_elems:
+                if elem in self.elements:
+                    self.elements.remove(elem)
+                    self.elements.append(elem)
+            self._redraw_all_elements()
+            self._schedule_save()
+
+        def _context_send_back(self):
+            for elem in reversed(self.selected_elems):
+                if elem in self.elements:
+                    self.elements.remove(elem)
+                    self.elements.insert(0, elem)
+            self._redraw_all_elements()
+            self._schedule_save()
+
         def _copy_elements(self, event=None):
             widget = getattr(event, "widget", None) if event is not None else None
             if widget is not None and self._is_text_input_widget(widget):
@@ -859,14 +998,23 @@ class CanvasMixin:
             self._select_element(None, clear=True)
 
             pasted = []
+            pasted_id_map = {}
+            pasted_group_map = {}
             for data in self.clipboard:
                 new_elem = copy.deepcopy(data)
+                old_elem_id = new_elem.elem_id
                 if self.reusable_ids:
                     new_elem.elem_id = min(self.reusable_ids)
                     self.reusable_ids.remove(new_elem.elem_id)
                 else:
                     new_elem.elem_id = self.next_id
                     self.next_id += 1
+                pasted_id_map[old_elem_id] = new_elem.elem_id
+                old_group = str(new_elem.props.get("group_id", "") or "").strip()
+                if old_group:
+                    if old_group not in pasted_group_map:
+                        pasted_group_map[old_group] = self._new_group_id()
+                    new_elem.props["group_id"] = pasted_group_map[old_group]
                 new_elem.x += 20
                 new_elem.y += 20
                 new_elem.rect_id = 0
@@ -876,6 +1024,21 @@ class CanvasMixin:
                 new_elem.parent_id = None
                 self.elements.append(new_elem)
                 pasted.append(new_elem)
+
+            # Preserve Scrollbar -> Text/Canvas relationships when the target
+            # and scrollbar are copied together. Relationships to widgets that
+            # were not copied remain pointed at the original widget.
+            for new_elem in pasted:
+                if new_elem.elem_type == "Scrollbar":
+                    raw_target = new_elem.props.get("target_widget", "")
+                    try:
+                        old_target_id = int(raw_target)
+                    except (TypeError, ValueError):
+                        continue
+                    if old_target_id in pasted_id_map:
+                        new_elem.props["target_widget"] = str(
+                            pasted_id_map[old_target_id]
+                        )
 
             self._rebuild_index()
             for new_elem in pasted:
@@ -920,11 +1083,35 @@ class CanvasMixin:
                         if child not in to_delete:
                             to_delete.append(child)
 
-            if self.full_code is not None:
-                if not self._remove_code_for_elements(to_delete):
-                    self._regenerate_full_code()
-            else:
-                self._regenerate_full_code()
+            deleted_ids = {e.elem_id for e in to_delete}
+            special_runtime_types = {
+                "Scrollbar", "PushButton", "RadioButton", "LEDDigit",
+                "LEDDisplay", "LEDIndicator", "Gauge", "MeasurementDisplay",
+            }
+            removed_scroll_relation = any(
+                e.elem_type in ("Scrollbar", "Text", "Canvas") or
+                e.elem_type in special_runtime_types
+                for e in to_delete
+            )
+            # An LED Indicator may be bound to a control that remains on the
+            # canvas; removing either endpoint must regenerate the shared
+            # binding block rather than leave a stale reference in full_code.
+            removed_scroll_relation = removed_scroll_relation or any(
+                e.elem_type == "LEDIndicator" and str(e.props.get("source_widget", "")).strip()
+                for e in to_delete
+            )
+            deleted_id_strings = {str(v) for v in deleted_ids}
+            for remaining in self.elements:
+                if (remaining.elem_type == "Scrollbar" and
+                        str(remaining.props.get("target_widget", "")).strip()
+                        in deleted_id_strings):
+                    remaining.props["target_widget"] = ""
+                    removed_scroll_relation = True
+                if (remaining.elem_type == "LEDIndicator" and
+                        str(remaining.props.get("source_widget", "")).strip()
+                        in deleted_id_strings):
+                    remaining.props["source_widget"] = ""
+                    removed_scroll_relation = True
 
             for elem in to_delete:
                 self.renderer.erase_element(elem)
@@ -932,6 +1119,18 @@ class CanvasMixin:
                     self.elements.remove(elem)
                     self.reusable_ids.add(elem.elem_id)
             self._rebuild_index()
+
+            if removed_scroll_relation:
+                # Scrollbar bindings live in a shared post-widget block, so
+                # deleting or invalidating one endpoint requires regeneration
+                # rather than the ordinary single-element removal splice.
+                self._invalidate_full_code()
+                self._regenerate_full_code()
+            elif self.full_code is not None:
+                if not self._remove_code_for_elements(to_delete):
+                    self._regenerate_full_code()
+            else:
+                self._regenerate_full_code()
 
             self.selected_elems.clear()
             self._reset_drag_state()

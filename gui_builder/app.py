@@ -7,9 +7,10 @@ from .canvas_mixin import CanvasMixin
 from .properties_mixin import PropertiesMixin
 from .code_mixin import CodeMixin
 from .project_mixin import ProjectMixin
+from .help_mixin import HelpMixin
 
 
-class GUIBuilderApp(ProjectMixin, CodeMixin, PropertiesMixin, CanvasMixin, UIMixin):
+class GUIBuilderApp(ProjectMixin, CodeMixin, PropertiesMixin, CanvasMixin, HelpMixin, UIMixin):
         def __init__(self, root: tk.Tk):
             self.root = root
             self._setup_styles()
@@ -52,6 +53,10 @@ class GUIBuilderApp(ProjectMixin, CodeMixin, PropertiesMixin, CanvasMixin, UIMix
             # *exported* app's window -- unrelated to the builder's own
             # window, which is maximized a few lines up regardless of this.
             self.WINDOW_STATE = "Normal"
+            # Whether exported/preview windows are fixed-size at runtime.
+            # Kept separate from WINDOW_STATE so existing projects remain
+            # fully backward-compatible.
+            self.WINDOW_LOCKED = False
 
             self.canvas_imports = "import tkinter as tk\nfrom tkinter import ttk"
 
@@ -74,9 +79,11 @@ class GUIBuilderApp(ProjectMixin, CodeMixin, PropertiesMixin, CanvasMixin, UIMix
             self.pending_type: Optional[str] = None
             self.code_visible = False
             self._code_display_timer = None
+            self._code_editor_window = None
             self.prop_context_var = tk.StringVar(value="Container: None")
             self._tooltip_win = None
             self._toolbox_compact = False
+            self._init_help_system()
 
             self.drag_mode = "none"
             self.drag_elem = None
@@ -87,6 +94,8 @@ class GUIBuilderApp(ProjectMixin, CodeMixin, PropertiesMixin, CanvasMixin, UIMix
             self.selection_scope_id = None
             self.active_container_id = None
             self._last_move_delta = (0, 0)
+            self._right_click_start = None
+            self._next_group_id_hint = 1
 
             self._build_ui()
             self.renderer.draw_grid(self.CANVAS_W, self.CANVAS_H)

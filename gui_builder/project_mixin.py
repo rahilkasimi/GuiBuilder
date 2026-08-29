@@ -40,6 +40,7 @@ class ProjectMixin:
                 "canvas_h": self.CANVAS_H,
                 "canvas_bg": self.CANVAS_BG,
                 "window_state": getattr(self, "WINDOW_STATE", "Normal"),
+                "window_locked": bool(getattr(self, "WINDOW_LOCKED", False)),
                 "canvas_imports": self.canvas_imports,
                 "full_code": self.full_code,
                 "custom_module_code": self.custom_module_code,
@@ -70,6 +71,7 @@ class ProjectMixin:
             self.CANVAS_H = data.get("canvas_h", 600)
             self.CANVAS_BG = data.get("canvas_bg", "#FAFAFA")
             self.WINDOW_STATE = data.get("window_state", "Normal")
+            self.WINDOW_LOCKED = bool(data.get("window_locked", False))
             self.canvas_imports = data.get("canvas_imports",
                                             "import tkinter as tk\nfrom tkinter import ttk")
             self.full_code = data.get("full_code")

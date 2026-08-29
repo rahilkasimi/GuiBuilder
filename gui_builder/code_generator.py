@@ -2,6 +2,7 @@
 from .dependencies import *
 from .config import *
 from .models import DesignElement
+from .instrumentation_widgets import INSTRUMENTATION_RUNTIME_CODE
 
 
 # ─── CodeGenerator ──────────────────────────────────────────────────────────
@@ -280,7 +281,7 @@ class CodeGenerator:
                 f"lambda e, _w={var_name}, _n={n}: _w.set(_w.get()[:_n]))")
 
     @staticmethod
-    def _window_state_lines(window_state: str, indent: str) -> List[str]:
+    def _window_state_lines(window_state: str, indent: str, window_locked: bool = False) -> List[str]:
         """Lines that put the exported window into the configured initial
         state right after it's created.
 
@@ -331,7 +332,205 @@ class CodeGenerator:
             ]
         else:
             body = []
+        if window_locked:
+            # A fixed runtime window should not be manually resized.  On
+            # native Windows title bars this also disables the maximize
+            # button while retaining the normal title-bar controls.
+            body.extend([
+                "try:",
+                "    root.resizable(False, False)",
+                "except tk.TclError:",
+                "    pass",
+            ])
         return [indent + line for line in body]
+
+    @staticmethod
+    def _instrumentation_types() -> set:
+        return {
+            "PushButton", "RadioButton", "LEDDigit", "LEDDisplay",
+            "LEDIndicator", "Gauge", "MeasurementDisplay",
+        }
+
+    @staticmethod
+    def _instrumentation_widget_line(
+            elem: DesignElement, var_name: str, parent_name: str, props: Dict[str, Any]
+    ) -> str:
+        """Build constructor code for a custom instrumentation widget."""
+        def q(key, default=""):
+            return json.dumps(str(props.get(key, default)))
+
+        width = round(float(elem.canvas_w), 2)
+        height = round(float(elem.canvas_h), 2)
+
+        if elem.elem_type == "PushButton":
+            font = props.get("font", ("Segoe UI", 9, "bold"))
+            if isinstance(font, list):
+                font = tuple(font)
+            if not isinstance(font, tuple):
+                font = ("Segoe UI", 9, "bold")
+            return (
+                f"        {var_name} = BuilderPushButton({parent_name}, "
+                f"text={q('text', 'Push Button')}, shape={q('shape', 'Square')}, "
+                f"style={q('style', 'Mechanical')}, behavior={q('behavior', 'Momentary')}, "
+                f"default_state={q('default_state', 'Off')}, font={repr(font)}, fg={q('fg', '#FFFFFF')}, "
+                f"bg={q('bg', '#1976D2')}, active_bg={q('active_bg', '#0D47A1')}, "
+                f"border_width={repr(props.get('border_width', 2) or 2)}, "
+                f"command=__COMMAND__, width={width}, height={height})"
+            )
+        if elem.elem_type == "RadioButton":
+            var_expr = f"self.{props.get('variable')}" if props.get('variable') else "None"
+            font = props.get("font", ("Segoe UI", 9))
+            if isinstance(font, list):
+                font = tuple(font)
+            if not isinstance(font, tuple):
+                font = ("Segoe UI", 9)
+            return (
+                f"        {var_name} = BuilderRadioButton({parent_name}, "
+                f"text={q('text', 'Option')}, variable={var_expr}, value={q('value', '1')}, "
+                f"shape={q('shape', 'Round')}, selected={q('selected', 'No')}, font={repr(font)}, "
+                f"fg={q('fg', '#212121')}, bg={q('bg', '#F5F5F5')}, "
+                f"active_fg={q('active_fg', '#1976D2')}, active_bg={q('active_bg', '#1976D2')}, "
+                f"command=__COMMAND__, width={width}, height={height})"
+            )
+        if elem.elem_type == "LEDDigit":
+            return (
+                f"        {var_name} = BuilderLEDDisplay({parent_name}, mode='Single Digit', "
+                f"value={q('value', '0')}, digits=1, color={q('color', '#00FF66')}, "
+                f"off_color={q('off_color', '#16351F')}, brightness={repr(props.get('brightness', 100) or 100)}, "
+                f"glow={q('glow', 'Yes')}, leading_zeros='No', "
+                f"segment_width={repr(props.get('segment_width', 4) or 4)}, digit_gap={repr(props.get('digit_gap', 12) or 12)}, bg={q('bg', '#101010')}, width={width}, height={height})"
+            )
+        if elem.elem_type == "LEDDisplay":
+            return (
+                f"        {var_name} = BuilderLEDDisplay({parent_name}, mode='Multi Digit', "
+                f"value={q('value', '120')}, digits={repr(props.get('digits', 3) or 3)}, "
+                f"color={q('color', '#00FF66')}, off_color={q('off_color', '#16351F')}, "
+                f"brightness={repr(props.get('brightness', 100) or 100)}, glow={q('glow', 'Yes')}, "
+                f"leading_zeros={q('leading_zeros', 'No')}, segment_width={repr(props.get('segment_width', 4) or 4)}, digit_gap={repr(props.get('digit_gap', 12) or 12)}, "
+                f"bg={q('bg', '#101010')}, width={width}, height={height})"
+            )
+        if elem.elem_type == "LEDIndicator":
+            return (
+                f"        {var_name} = BuilderLEDIndicator({parent_name}, state={q('state', 'Off')}, "
+                f"on_color={q('on_color', '#00FF66')}, off_color={q('off_color', '#16351F')}, "
+                f"shape={q('shape', 'Round')}, brightness={repr(props.get('brightness', 100) or 100)}, "
+                f"glow={q('glow', 'Yes')}, border_width={repr(props.get('border_width', 1) or 1)}, "
+                f"bg={q('bg', '#E0E0E0')}, width={width}, height={height})"
+            )
+        if elem.elem_type == "Gauge":
+            return (
+                f"        {var_name} = BuilderGauge({parent_name}, value={repr(props.get('value', 50))}, "
+                f"min_value={repr(props.get('min_value', 0))}, max_value={repr(props.get('max_value', 100))}, "
+                f"start_angle={repr(props.get('start_angle', 225))}, end_angle={repr(props.get('end_angle', -45))}, "
+                f"needle_color={q('needle_color', '#E53935')}, arc_color={q('arc_color', '#1976D2')}, "
+                f"track_color={q('track_color', '#D9D9D9')}, tick_color={q('tick_color', '#555555')}, "
+                f"ticks={repr(props.get('ticks', 10) or 10)}, show_value={q('show_value', 'Yes')}, "
+                f"unit={q('unit', '')}, thickness={repr(props.get('thickness', 8) or 8)}, bg={q('bg', '#FFFFFF')}, width={width}, height={height})"
+            )
+        if elem.elem_type == "MeasurementDisplay":
+            return (
+                f"        {var_name} = BuilderMeasurementDisplay({parent_name}, label={q('label', 'Temperature')}, "
+                f"value={q('value', '24')}, unit={q('unit', '°C')}, style={q('style', 'Modern')}, "
+                f"color={q('color', '#1976D2')}, bg={q('bg', '#FFFFFF')}, "
+                f"decimal_places={repr(props.get('decimal_places', 0) or 0)}, prefix={q('prefix', '')}, "
+                f"suffix={q('suffix', '')}, secondary_text={q('secondary_text', '')}, "
+                f"secondary_color={q('secondary_color', '#666666')}, align={q('align', 'center')}, "
+                f"led_digits={repr(props.get('led_digits', 3) or 3)}, width={width}, height={height})"
+            )
+        raise ValueError(f"Unsupported instrumentation type: {elem.elem_type}")
+
+    @staticmethod
+    def _instrumentation_binding_lines(elements: List[DesignElement]) -> List[str]:
+        """Generate post-construction state bindings, notably LED indicators."""
+        by_id = {e.elem_id: e for e in elements}
+        lines: List[str] = []
+        for elem in elements:
+            if elem.elem_type != "LEDIndicator":
+                continue
+            raw_source = str(elem.props.get("source_widget", "") or "").strip()
+            try:
+                source_id = int(raw_source)
+            except (TypeError, ValueError):
+                continue
+            source = by_id.get(source_id)
+            if source is None:
+                continue
+            led_var = f"self._elem_{elem.elem_id}"
+            src_var = f"self._elem_{source.elem_id}"
+            mode = str(elem.props.get("source_mode", "Mirror")).strip().lower()
+            if source.elem_type == "PushButton":
+                # BuilderPushButton exposes a state listener that already
+                # distinguishes momentary press/release from toggle state.
+                if mode == "toggle":
+                    lines.append(f"        {src_var}.canvas.bind('<ButtonRelease-1>', lambda e, _led={led_var}: _led.set_state(not _led.get_state()), add='+')")
+                else:
+                    lines.append(f"        {src_var}.add_state_listener({led_var}.set_state)")
+            elif source.elem_type == "RadioButton":
+                if mode == "momentary":
+                    lines.append(f"        {src_var}.canvas.bind('<ButtonPress-1>', lambda e, _led={led_var}: _led.set_state(True), add='+')")
+                    lines.append(f"        {src_var}.canvas.bind('<ButtonRelease-1>', lambda e, _led={led_var}: _led.set_state(False), add='+')")
+                elif mode == "toggle":
+                    lines.append(f"        {src_var}.canvas.bind('<ButtonRelease-1>', lambda e, _led={led_var}: _led.set_state(not _led.get_state()), add='+')")
+                else:
+                    lines.append(f"        {src_var}.add_state_listener({led_var}.set_state)")
+            elif source.elem_type == "Radiobutton":
+                variable = source.props.get("variable")
+                value = str(source.props.get("value", "1"))
+                if variable:
+                    state_expr = f"str(self.{variable}.get()) == {json.dumps(value)}"
+                    lines.append(f"        {src_var}.bind('<ButtonRelease-1>', lambda e, _led={led_var}: _led.set_state({state_expr}), add='+')")
+            elif source.elem_type == "Checkbutton":
+                variable = source.props.get("variable")
+                if variable:
+                    if mode == "toggle":
+                        lines.append(f"        {src_var}.bind('<ButtonRelease-1>', lambda e, _led={led_var}: _led.set_state(not _led.get_state()), add='+')")
+                    else:
+                        lines.append(f"        {src_var}.bind('<ButtonRelease-1>', lambda e, _led={led_var}, _src=self.{variable}: _led.set_state(bool(_src.get())), add='+')")
+            elif mode == "toggle":
+                lines.append(f"        {src_var}.bind('<ButtonRelease-1>', lambda e, _led={led_var}: _led.set_state(not _led.get_state()), add='+')")
+        return lines
+
+    @staticmethod
+    def _scrollbar_binding_lines(elements: List[DesignElement]) -> List[str]:
+        """Generate post-construction bindings for designer Scrollbars.
+
+        The binding block is emitted after *all* widgets are created so a
+        scrollbar can target a Text/Canvas that happens to appear later in
+        the element ordering. The persisted relationship is an element ID,
+        not a display caption.
+        """
+        by_id = {e.elem_id: e for e in elements}
+        lines: List[str] = []
+        for scrollbar in elements:
+            if scrollbar.elem_type != "Scrollbar":
+                continue
+            raw_target = scrollbar.props.get("target_widget", "")
+            try:
+                target_id = int(raw_target)
+            except (TypeError, ValueError):
+                continue
+            target = by_id.get(target_id)
+            if target is None or target.elem_type not in ("Text", "Canvas"):
+                continue
+
+            sb_var = f"self._elem_{scrollbar.elem_id}"
+            target_var = f"self._elem_{target.elem_id}"
+            orient = str(scrollbar.props.get("orient", "vertical")).strip().lower()
+            if orient == "horizontal":
+                lines.append(
+                    f"        {sb_var}.configure(command={target_var}.xview)"
+                )
+                lines.append(
+                    f"        {target_var}.configure(xscrollcommand={sb_var}.set)"
+                )
+            else:
+                lines.append(
+                    f"        {sb_var}.configure(command={target_var}.yview)"
+                )
+                lines.append(
+                    f"        {target_var}.configure(yscrollcommand={sb_var}.set)"
+                )
+        return lines
 
     # ─── Per-element code generation (single source of truth) ─────────────
     @staticmethod
@@ -383,7 +582,22 @@ class CodeGenerator:
         # that aren't, either because they're design-time-only controls or
         # because a dedicated code block elsewhere handles them instead.
         prop_strs = []
+        color_keys = {
+            "fg", "bg", "activebackground", "activeforeground",
+            "highlightbackground", "highlightcolor", "insertbackground",
+            "selectbackground", "selectforeground",
+        }
         for k, v in props.items():
+            # A font tuple accidentally stored in a color property is invalid
+            # Tcl/Tk input.  Fall back to that element's configured default
+            # rather than allowing a malformed project to crash Run Preview.
+            if k in color_keys and not isinstance(v, str):
+                fallback = ELEMENT_TYPES.get(elem.elem_type, {}).get(
+                    "defaults", {}).get(k)
+                if isinstance(fallback, str):
+                    v = fallback
+                else:
+                    continue
             if k == "font" and isinstance(v, list):
                 # Defense in depth: font must be emitted as a tuple
                 # literal, never a list (tkinter raises for a list font
@@ -485,7 +699,21 @@ class CodeGenerator:
             place_line = CodeGenerator._place_line(elem, var_name, rel_x, rel_y)
             return widget_line, place_line, []
 
-        if elem.elem_type == "Image":
+        if elem.elem_type in CodeGenerator._instrumentation_types():
+            widget_line = CodeGenerator._instrumentation_widget_line(
+                elem, var_name, parent_name, props
+            )
+            # Dedicated instrumentation constructors accept a command only for
+            # command-capable elements. The placeholder is resolved here so
+            # generated handlers remain identical to the existing event model.
+            command_target = f"self._on_{elem.elem_type}_{elem.elem_id}"
+            if elem.elem_type in ("PushButton", "RadioButton") and any(
+                    b_elem == elem and b_event == "command" for b_elem, b_event, _ in bindings
+            ):
+                widget_line = widget_line.replace("__COMMAND__", command_target)
+            else:
+                widget_line = widget_line.replace("command=__COMMAND__", "command=None")
+        elif elem.elem_type == "Image":
             widget_line = CodeGenerator._image_widget_line(elem, var_name, parent_name)
         elif elem.elem_type == "Calendar":
             widget_line = CodeGenerator._calendar_widget_line(elem, var_name, parent_name)
@@ -589,6 +817,9 @@ class CodeGenerator:
             if maxlen_line:
                 extra_lines.append(maxlen_line)
 
+        if elem.elem_type == "RadioButton" and str(elem.props.get("selected", "No")).strip().lower() in ("yes", "1", "true"):
+            extra_lines.append(f"        {var_name}.select()")
+
         if tooltip_val:
             extra_lines.append(
                 f"        _ToolTip({var_name}, {json.dumps(str(tooltip_val))})"
@@ -604,14 +835,14 @@ class CodeGenerator:
             elements: List[DesignElement], window_title: str,
             window_size: Tuple[int, int], canvas_bg: str, canvas_imports: str,
             custom_module_code: str = "", custom_class_code: str = "",
-            window_state: str = "Normal"
+            window_state: str = "Normal", window_locked: bool = False
     ) -> str:
         if not elements:
             return CodeGenerator._empty_template(window_title, window_size,
                                                   canvas_bg, canvas_imports,
                                                   custom_module_code,
                                                   custom_class_code,
-                                                  window_state)
+                                                  window_state, window_locked)
 
         has_table = any(e.elem_type == "Table" for e in elements)
         if has_table and "import pandas as pd" not in canvas_imports:
@@ -640,19 +871,19 @@ class CodeGenerator:
         class_body.append("        self.root = root")
         class_body.append(f"        root.title({json.dumps(window_title)})")
         class_body.append(
-            f"        root.geometry({json.dumps(f'{window_size[0]}x{window_size[1]}')})"
+            f"        root.geometry({json.dumps(f'{int(round(float(window_size[0])))}x{int(round(float(window_size[1])))}')})"
         )
         class_body.append(
             f"        root.configure(bg={json.dumps(canvas_bg)})"
         )
         class_body.extend(
-            CodeGenerator._window_state_lines(window_state, "        ")
+            CodeGenerator._window_state_lines(window_state, "        ", window_locked)
         )
         class_body.append("")
 
         vars_to_create = {}
         for elem in elements:
-            if elem.elem_type in ("Radiobutton", "Checkbutton"):
+            if elem.elem_type in ("Radiobutton", "RadioButton", "Checkbutton"):
                 var_name = elem.props.get("variable")
                 if var_name and var_name not in vars_to_create:
                     var_type = "tk.IntVar(value=0)" if elem.elem_type == "Checkbutton" else "tk.StringVar(value='')"
@@ -693,6 +924,16 @@ class CodeGenerator:
             class_body.extend(extra_lines)
             class_body.append(place_line)
 
+        scrollbar_bindings = CodeGenerator._scrollbar_binding_lines(elements)
+        if scrollbar_bindings:
+            class_body.append("")
+            class_body.extend(scrollbar_bindings)
+
+        instrumentation_bindings = CodeGenerator._instrumentation_binding_lines(elements)
+        if instrumentation_bindings:
+            class_body.append("")
+            class_body.extend(instrumentation_bindings)
+
         # --- Bindings and handler methods ---
         for elem, event, var_name in bindings:
             if event != "command":
@@ -727,7 +968,14 @@ class CodeGenerator:
         ]
 
         has_tooltips = any(e.props.get("tooltip") for e in elements)
-        helper_block = [TOOLTIP_HELPER_CODE, ""] if has_tooltips else []
+        has_instrumentation = any(
+            e.elem_type in CodeGenerator._instrumentation_types() for e in elements
+        )
+        helper_block = []
+        if has_instrumentation:
+            helper_block.extend([INSTRUMENTATION_RUNTIME_CODE.rstrip("\n"), ""])
+        if has_tooltips:
+            helper_block.extend([TOOLTIP_HELPER_CODE, ""])
 
         # Any code the user typed into the code editor that wasn't part of
         # the recognized boilerplate/handler regions -- module-level
@@ -754,45 +1002,69 @@ class CodeGenerator:
     def _empty_template(
             window_title: str, window_size: Tuple[int, int], canvas_bg: str,
             canvas_imports: str, custom_module_code: str = "",
-            custom_class_code: str = "", window_state: str = "Normal"
+            custom_class_code: str = "",
+            window_state: str = "Normal", window_locked: bool = False
     ) -> str:
+        """Generate a valid MainApplication even for an empty canvas.
+
+        Keeping the same class/entry-point contract as non-empty designs is
+        important because Run Preview instantiates MainApplication against a
+        Toplevel parent. Standalone exports still use Tk() in the main guard.
+        """
         if window_state == "Maximized" and "import platform" not in canvas_imports:
             canvas_imports = canvas_imports.rstrip() + "\nimport platform"
-        # No elements means no class scaffold to attach custom_class_code
-        # to as real methods here -- keep it as preserved text rather than
-        # dropping it, so it round-trips back into class_body correctly
-        # once the design has elements again. Dedent it first since it was
-        # captured at class-method indentation (4 spaces); left as-is it
-        # would be a syntax error sitting at module level here.
-        dedented_class_code = "\n".join(
-            line[4:] if line.startswith("    ") else line
-            for line in custom_class_code.splitlines()
-        )
-        custom_bits = "\n\n".join(
-            c.strip("\n") for c in (custom_module_code, dedented_class_code)
-            if c.strip()
-        )
-        custom_block = f"\n{custom_bits}\n" if custom_bits else ""
+
+        # Custom class code is captured at method indentation (4 spaces);
+        # restore it under MainApplication.
+        class_methods = []
+        if custom_class_code.strip():
+            class_methods.extend(
+                custom_class_code.rstrip("\n").splitlines()
+            )
+
+        body = [
+            '"""Generated by Tkinter Visual Designer."""',
+            "",
+            canvas_imports,
+            "",
+        ]
+
+        if custom_module_code.strip():
+            body.extend([custom_module_code.rstrip("\n"), ""])
+
+        body.extend([
+            "class MainApplication:",
+            "    def __init__(self, root):",
+            "        self.root = root",
+            f"        root.title({json.dumps(window_title)})",
+            f"        root.geometry({json.dumps(f'{int(round(float(window_size[0])))}x{int(round(float(window_size[1])))}')})",
+            f"        root.configure(bg={json.dumps(canvas_bg)})",
+        ])
+
         window_state_lines = CodeGenerator._window_state_lines(
-            window_state, "    "
+            window_state, "        "
         )
-        window_state_block = (
-            ("\n" + "\n".join(window_state_lines)) if window_state_lines else ""
-        )
-        return f'''"""Generated by Tkinter Visual Designer."""
+        body.extend(window_state_lines)
+        body.extend([
+            "",
+            '        label = tk.Label(',
+            f'            root, text="Add elements from the toolbox to begin!",',
+            f'            font=("Segoe UI", 10), bg={json.dumps(canvas_bg)}',
+            "        )",
+            "        label.place(x=10, y=10, width=300, height=30)",
+        ])
 
-{canvas_imports}
-{custom_block}
+        if class_methods:
+            body.append("")
+            body.extend(class_methods)
 
-def main():
-    root = tk.Tk()
-    root.title({json.dumps(window_title)})
-    root.geometry({json.dumps(f"{window_size[0]}x{window_size[1]}")})
-    root.configure(bg={json.dumps(canvas_bg)}){window_state_block}
-    label = tk.Label(root, text="Add elements from the toolbox to begin!", font=("Segoe UI", 10), bg={json.dumps(canvas_bg)})
-    label.place(x=10, y=10, width=200, height=30)
-    root.mainloop()
+        body.extend([
+            "",
+            "if __name__ == '__main__':",
+            "    root = tk.Tk()",
+            "    app = MainApplication(root)",
+            "    root.mainloop()",
+            "",
+        ])
+        return "\n".join(body)
 
-if __name__ == "__main__":
-    main()
-'''

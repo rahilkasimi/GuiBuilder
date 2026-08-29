@@ -142,6 +142,11 @@ class UIMixin:
             )
             if pack_kwargs:
                 btn.pack(**pack_kwargs)
+            # All flat builder buttons participate in contextual help mode.
+            # The HelpMixin supplies a richer description where one exists.
+            if hasattr(self, "_bind_context_help"):
+                help_text = getattr(self, "_context_help_text_for")("control", text)
+                self._bind_context_help(btn, help_text)
             return btn
 
         def _update_window_title_display(self):
@@ -331,6 +336,29 @@ class UIMixin:
                               lambda: self._open_code_editor(None),
                               side=tk.LEFT, padx=2)
 
+            # Keep help controls at the far right so the toolbar remains usable
+            # as the application window changes size.
+            tk.Frame(toolbar, bg=self._panel_bg).pack(side=tk.LEFT, fill=tk.X, expand=True)
+            self._context_help_btn = tk.Button(
+                toolbar, text="?", command=self._help_toggle,
+                font=("Segoe UI", 12, "bold"), width=3,
+                bg="#FFFFFF", fg=self._panel_fg, activebackground="#E8E8E8",
+                activeforeground=self._panel_fg, relief="flat", bd=0,
+                highlightthickness=0, cursor="hand2", padx=5, pady=3
+            )
+            self._context_help_btn.pack(side=tk.LEFT, padx=(4, 2))
+            self._bind_context_help(
+                self._context_help_btn,
+                "Context Help Mode — click ? to enable/disable hover help for canvas elements, toolbox items, and main UI controls."
+            )
+            help_btn = self._flat_button(
+                toolbar, "Help", self._open_help, side=tk.LEFT, padx=2
+            )
+            self._bind_context_help(
+                help_btn,
+                "Open the complete in-app Help Guide covering every GUI element, its properties, selection, code generation, and keyboard shortcuts."
+            )
+
         def _toggle_code_view(self):
             if self.code_visible:
                 self.v_paned.forget(self.code_frame)
@@ -343,7 +371,7 @@ class UIMixin:
 
         def _build_toolbox(self):
             header = tk.Frame(self.toolbox_frame, bg=self._panel_bg)
-            header.pack(fill=tk.X, pady=(5, 4))
+            header.pack(fill=tk.X, pady=(4, 3))
             tk.Label(header, text="TOOLBOX", font=("Segoe UI", 10, "bold"),
                      bg=self._panel_bg, fg=self._panel_fg
                      ).pack(side=tk.LEFT, padx=6)
@@ -352,12 +380,18 @@ class UIMixin:
                 font=("Segoe UI", 10)
             )
             self._toolbox_toggle_btn.pack(side=tk.RIGHT, padx=6)
+            self._bind_context_help(
+                self._toolbox_toggle_btn,
+                "Toggle toolbox presentation between labeled list mode and compact icon mode."
+            )
+            toolbox_label = header.winfo_children()[0]
+            self._bind_context_help(toolbox_label, "TOOLBOX — choose a GUI element, then click the canvas to place it.")
 
             self.toolbox_items_container = _VScrollFrame(
                 self.toolbox_frame, bg=self._panel_bg
                 )
             self.toolbox_items_container.pack(fill=tk.BOTH, expand=True, padx=2,
-                                              pady=2)
+                                              pady=1)
             toolbox_items_parent = self.toolbox_items_container.inner
 
             self._toolbox_items = {}  # name -> (frame, icon_lbl, name_lbl)
@@ -369,7 +403,9 @@ class UIMixin:
                 cat = spec.get("category", "Other")
                 categories.setdefault(cat, []).append((name, spec))
 
-            for cat in sorted(categories.keys()):
+            category_order = ["Input", "Instrumentation", "Containers", "Display"]
+            ordered_categories = [c for c in category_order if c in categories] + [c for c in categories if c not in category_order]
+            for cat in ordered_categories:
                 # Each category gets its own always-packed wrapper. The header
                 # label lives directly in this wrapper (always packed). The
                 # items live in a dedicated sub-frame that we can freely switch
@@ -419,19 +455,28 @@ class UIMixin:
                         f.configure(bg=TOOLBOX_HOVER_COLOR)
                         for child in f.winfo_children():
                             child.configure(bg=TOOLBOX_HOVER_COLOR)
-                        if self._toolbox_compact:
+                        if self._toolbox_compact and not self._context_help_enabled:
                             self._show_tooltip(f, tip)
+                        if self._context_help_enabled:
+                            self._context_help_target = f
+                            self._show_tooltip(
+                                f,
+                                self._context_help_text_for("element", tip)
+                            )
 
                     def on_leave(e, f=item_frame):
                         f.configure(bg=TOOLBOX_NORMAL_COLOR)
                         for child in f.winfo_children():
                             child.configure(bg=TOOLBOX_NORMAL_COLOR)
-                        self._hide_tooltip()
+                        if self._context_help_target is f or self._toolbox_compact:
+                            self._hide_tooltip()
 
                     for widget in (item_frame, lbl_icon, lbl_name):
                         widget.bind("<Button-1>", on_click)
                         widget.bind("<Enter>", on_enter)
                         widget.bind("<Leave>", on_leave)
+                        # Keep contextual help active over the entire sidebar row,
+                        # not just its text/icon child.
 
                     self._toolbox_items[name] = (item_frame, lbl_icon, lbl_name, cat)
                     self._toolbox_buttons[name] = item_frame
@@ -490,27 +535,41 @@ class UIMixin:
                     icon_lbl.configure(
                         font = ("Segoe UI Emoji", 12)
                         )
-                    frame.pack( fill = tk.X, padx = 5, pady = 1 )
+                    frame.pack( fill = tk.X, padx = 4, pady = 0 )
                     icon_lbl.pack( side = tk.LEFT, padx = 6, pady = 4 )
                     name_lbl.pack( side = tk.RIGHT, padx = 6, pady = 4 )
                 self._toolbox_toggle_btn.configure( text = "⊞ Icons" )
 
         def _show_tooltip(self, widget, text):
             self._hide_tooltip()
+            if not text:
+                return
             try:
-                x = widget.winfo_rootx()
-                y = widget.winfo_rooty() + widget.winfo_height() + 4
+                x = widget.winfo_pointerx() + 14
+                y = widget.winfo_pointery() + 18
+                if x < 0 or y < 0:
+                    x = widget.winfo_rootx()
+                    y = widget.winfo_rooty() + widget.winfo_height() + 4
             except Exception:
                 return
             self._tooltip_win = tk.Toplevel(self.root)
             self._tooltip_win.wm_overrideredirect(True)
-            self._tooltip_win.wm_geometry(f"+{x}+{y}")
-            tk.Label(
+            label = tk.Label(
                 self._tooltip_win, text=text, justify=tk.LEFT,
+                wraplength=420,
                 background="#2b2b2b", foreground="#ffffff",
                 relief=tk.SOLID, borderwidth=1, font=("Segoe UI", 9),
-                padx=6, pady=3
-            ).pack()
+                padx=8, pady=5
+            )
+            label.pack()
+            self._tooltip_win.update_idletasks()
+            sw = self._tooltip_win.winfo_screenwidth()
+            sh = self._tooltip_win.winfo_screenheight()
+            tw = self._tooltip_win.winfo_reqwidth()
+            th = self._tooltip_win.winfo_reqheight()
+            x = min(max(4, x), max(4, sw - tw - 8))
+            y = min(max(4, y), max(4, sh - th - 8))
+            self._tooltip_win.wm_geometry(f"+{x}+{y}")
 
         def _hide_tooltip(self, event=None):
             if getattr(self, "_tooltip_win", None) is not None:
@@ -523,9 +582,13 @@ class UIMixin:
         def _on_canvas_motion(self, event):
             x, y = self._logical_xy(event)
             elem = self._find_element_at(x, y)
-            if elem:
-                tooltip_text = f"{elem.elem_type} (ID: {elem.elem_id})"
+            if elem and self._context_help_enabled:
+                tooltip_text = self._context_help_text_for("element", elem=elem)
+                # Position directly near the pointer for responsive contextual help.
                 self._show_tooltip(self.canvas, tooltip_text)
+                return
+            if elem and not self._context_help_enabled:
+                self._hide_tooltip()
             else:
                 self._hide_tooltip()
 

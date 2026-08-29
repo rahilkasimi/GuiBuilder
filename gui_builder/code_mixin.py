@@ -1,3 +1,4 @@
+import traceback
 """Generated-code lifecycle, preview/build and code editor."""
 from openpyxl.styles.builtins import accent_6
 
@@ -12,6 +13,16 @@ class CodeMixin:
                 self, new_elems: List[DesignElement]
                 ) -> bool:
             if not self.full_code:
+                return False
+
+            # Shared/generated helper blocks for Scrollbars and instrumentation
+            # widgets are intentionally regenerated as a unit. This keeps
+            # target bindings and embedded runtime helper classes consistent.
+            special_runtime_types = {
+                "Scrollbar", "PushButton", "RadioButton", "LEDDigit",
+                "LEDDisplay", "LEDIndicator", "Gauge", "MeasurementDisplay",
+            }
+            if any(e.elem_type in special_runtime_types for e in new_elems):
                 return False
 
             # If any of the new elements need a tooltip and the reusable
@@ -239,7 +250,8 @@ class CodeMixin:
                 self.elements, self.window_title, (self.CANVAS_W, self.CANVAS_H),
                 self.CANVAS_BG, self.canvas_imports,
                 self.custom_module_code, self.custom_class_code,
-                getattr(self, "WINDOW_STATE", "Normal")
+                getattr(self, "WINDOW_STATE", "Normal"),
+                getattr(self, "WINDOW_LOCKED", False)
             )
             self._current_code = self.full_code
             self._update_code_display()
@@ -287,7 +299,8 @@ class CodeMixin:
                     (self.CANVAS_W, self.CANVAS_H),
                     self.CANVAS_BG, self.canvas_imports,
                     self.custom_module_code, self.custom_class_code,
-                    getattr(self, "WINDOW_STATE", "Normal")
+                    getattr(self, "WINDOW_STATE", "Normal"),
+                    getattr(self, "WINDOW_LOCKED", False)
                 )
                 self.full_code = code
             self._current_code = code
@@ -313,27 +326,34 @@ class CodeMixin:
             self._update_status("Code copied to clipboard.")
 
         def _run_preview(self):
+            """Run the generated application inside a child Toplevel.
+
+            Preview deliberately runs in-process.  Calling
+            ``subprocess.Popen([sys.executable, ...])`` is unsafe in a
+            PyInstaller-frozen build because ``sys.executable`` becomes
+            GuiBuilder.exe, which starts a second GuiBuilder instance.
+            """
             try:
-                # Regenerate fresh from the current canvas state rather than
-                # trusting a possibly-stale self._current_code cache -- but
-                # still include any custom code the user added via the code
-                # editor (constants, helper functions, extra methods), or
-                # Run Preview would silently execute without it.
                 code = CodeGenerator.generate(
                     self.elements, self.window_title,
                     (self.CANVAS_W, self.CANVAS_H),
                     self.CANVAS_BG, self.canvas_imports,
                     self.custom_module_code, self.custom_class_code,
-                    getattr(self, "WINDOW_STATE", "Normal")
+                    getattr(self, "WINDOW_STATE", "Normal"),
+                    getattr(self, "WINDOW_LOCKED", False)
                 )
             except Exception as e:
-                messagebox.showerror("Run Preview Error",
-                                      f"Failed to generate code:\n{e}")
+                messagebox.showerror(
+                    "Run Preview Error",
+                    f"Failed to generate code:\n{e}"
+                )
                 return
 
             if not code or not code.strip():
-                messagebox.showerror("Run Preview Error",
-                                      "Generated code is empty - nothing to run.")
+                messagebox.showerror(
+                    "Run Preview Error",
+                    "Generated code is empty - nothing to run."
+                )
                 return
 
             missing = self._missing_packages_for_code(code)
@@ -344,12 +364,13 @@ class CodeMixin:
                     f"The generated app needs the following package(s), "
                     f"which aren't installed in this Python environment:\n\n"
                     f"  {names}\n\nInstall them now and continue?"
-                    )
+                )
                 if not proceed:
                     self._update_status(
                         "Run Preview cancelled — missing dependencies."
-                        )
+                    )
                     return
+
                 self._update_status(f"Installing {names}...")
                 self.root.update_idletasks()
                 for pip_name, _import_name in missing:
@@ -359,83 +380,138 @@ class CodeMixin:
                             f"Failed to install {pip_name}. Install it "
                             f"manually, e.g.:\n\n"
                             f"    {sys.executable} -m pip install {pip_name}"
-                            )
+                        )
                         return
 
+            temp_dir = None
             try:
-                # A plain temp *file* (the previous approach) has no
-                # "resources/" folder next to it, but the generated script
-                # resolves image paths relative to its own file location (see
-                # CodeGenerator) -- so any Image element would show
-                # "[Image Error]" every time under Run Preview specifically,
-                # even though the exact same code works once actually saved
-                # next to the real resources folder. Using a temp *directory*
-                # and copying resources/ into it alongside the script mirrors
-                # what a real save-next-to-resources deployment looks like.
+                # Keep a real file location for generated Image elements and
+                # any user code that relies on __file__.
                 temp_dir = tempfile.mkdtemp(prefix="gui_preview_")
                 temp_path = os.path.join(temp_dir, "preview.py")
                 with open(temp_path, "w", encoding="utf-8") as f:
                     f.write(code)
+
                 src_resources = os.path.join(BASE_DIR, "resources")
                 if os.path.isdir(src_resources):
-                    shutil.copytree(src_resources,
-                                     os.path.join(temp_dir, "resources"))
-            except Exception as e:
-                messagebox.showerror("Run Preview Error",
-                                      f"Failed to write preview file:\n{e}")
-                return
+                    shutil.copytree(
+                        src_resources,
+                        os.path.join(temp_dir, "resources")
+                    )
 
-            try:
-                proc = subprocess.Popen(
-                    [sys.executable, temp_path],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    text=True
+                # Only one preview is needed at a time. Close any previous
+                # preview before creating a fresh one from the current design.
+                old_preview = getattr(self, "_preview_window", None)
+                if old_preview is not None and old_preview.winfo_exists():
+                    self._close_preview(remove_window=True)
+
+                preview_window = tk.Toplevel(self.root)
+                preview_window.transient(self.root)
+                preview_window.geometry(f"{max(320, int(self.CANVAS_W))}x{max(240, int(self.CANVAS_H))}")
+                preview_window.resizable(True, True)
+
+                # Compile/execute with a private module namespace. The
+                # generated __main__ guard therefore does not create a second
+                # Tk root. MainApplication is instantiated against this
+                # already-created Toplevel, which is important for custom
+                # Canvas-backed instrumentation widgets.
+                preview_ns = {
+                    "__name__": "__gui_builder_preview__",
+                    "__file__": temp_path,
+                    "__package__": None,
+                    "__cached__": None,
+                }
+                exec(compile(code, temp_path, "exec"), preview_ns, preview_ns)
+                app_class = preview_ns.get("MainApplication")
+                if not isinstance(app_class, type):
+                    preview_window.destroy()
+                    raise RuntimeError(
+                        "Generated code does not define MainApplication."
+                    )
+                preview_window.protocol(
+                    "WM_DELETE_WINDOW",
+                    lambda: self._close_preview()
                 )
-                self._update_status("Running Code Preview...")
-            except Exception as e:
-                messagebox.showerror("Run Preview Error", str(e))
-                return
 
-            # Watch the preview process for its entire lifetime rather than
-            # polling once at a fixed delay -- a one-shot poll can miss a crash
-            # that happens slightly later than expected (a slower machine or
-            # an error only triggered once the user interacts with the
-            # preview), silently leaving the window looking like it "just
-            # closed" with no explanation.
-            #
-            # Tkinter/Tcl calls are only safe from the main thread, so the
-            # background thread here does nothing but block on
-            # proc.communicate() and push the result into a thread-safe queue;
-            # the actual GUI update happens from _poll_preview_result, which is
-            # scheduled via self.root.after() from the main thread only (never
-            # called directly from the background thread).
-            result_q: "queue.Queue" = queue.Queue()
+                self._preview_window = preview_window
+                self._preview_temp_dir = temp_dir
+                self._preview_namespace = preview_ns
+                self._preview_app = None
 
-            def _watch_preview():
                 try:
-                    _, stderr_out = proc.communicate()
+                    self._preview_app = app_class(preview_window)
+                    # Custom instrumentation controls use an inner Canvas.
+                    # Force geometry propagation and an idle redraw before
+                    # the preview is shown so their design-time sizes and
+                    # positions are reflected deterministically.
+                    preview_window.update_idletasks()
+                    preview_window.update()
+
+                    def _refresh_preview_widget_tree(widget):
+                        redraw = getattr(widget, "_redraw", None)
+                        if callable(redraw):
+                            try:
+                                redraw()
+                            except tk.TclError:
+                                pass
+                        try:
+                            children = widget.winfo_children()
+                        except tk.TclError:
+                            children = ()
+                        for child in children:
+                            _refresh_preview_widget_tree(child)
+
+                    _refresh_preview_widget_tree(preview_window)
+                    preview_window.update_idletasks()
+                    preview_window.update()
                 except Exception:
-                    stderr_out = ""
-                result_q.put((proc.returncode, stderr_out))
+                    self._close_preview(remove_window=True)
+                    raise
 
-            threading.Thread(target=_watch_preview, daemon=True).start()
-            self.root.after(200, lambda: self._poll_preview_result(result_q))
+                # Give the generated app a useful native child-window title
+                # even if custom code changes it during initialization.
+                try:
+                    preview_window.lift()
+                    preview_window.focus_force()
+                except Exception:
+                    pass
 
-        def _poll_preview_result(self, result_q: "queue.Queue"):
-            try:
-                ret, stderr_out = result_q.get_nowait()
-            except queue.Empty:
-                self.root.after(200, lambda: self._poll_preview_result(result_q))
-                return
-            if ret is not None and ret != 0:
-                self._show_preview_error(ret, stderr_out)
+                self._update_status("Running Code Preview...")
 
-        def _show_preview_error(self, ret: int, stderr_out: str):
-            messagebox.showerror(
-                "Run Preview Error",
-                f"The preview exited with an error (code {ret}).\n\n"
-                f"{stderr_out.strip() or 'No error output captured.'}"
+            except Exception as e:
+                if temp_dir:
+                    try:
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                    except Exception:
+                        pass
+                messagebox.showerror(
+                    "Run Preview Error",
+                    f"The preview could not be started:\n\n{traceback.format_exc()}"
                 )
+
+        def _close_preview(self, remove_window: bool = True):
+            """Destroy the current preview Toplevel and release its temp files."""
+            window = getattr(self, "_preview_window", None)
+            self._preview_window = None
+            self._preview_app = None
+            self._preview_namespace = None
+
+            if remove_window and window is not None:
+                try:
+                    if window.winfo_exists():
+                        window.destroy()
+                except Exception:
+                    pass
+
+            temp_dir = getattr(self, "_preview_temp_dir", None)
+            self._preview_temp_dir = None
+            if temp_dir:
+                try:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                except Exception:
+                    pass
+
+            self._update_status("Preview closed.")
 
         def _extract_method_body(self, lines: List[str], method_name: str) -> Optional[str]:
             """Pull the body of a single "    def <method_name>(...):" block out
@@ -671,21 +747,71 @@ class CodeMixin:
                 if importlib.util.find_spec(import_name) is None
                 ]
 
+        def _is_frozen(self) -> bool:
+            """Return True when GuiBuilder itself is running as a PyInstaller EXE."""
+            return bool(getattr(sys, "frozen", False))
+
+        def _external_python_command(self) -> Optional[List[str]]:
+            """Return a command that invokes a real Python interpreter.
+
+            In a normal source run, ``sys.executable`` is the Python interpreter
+            and is safe to use. In a PyInstaller build, ``sys.executable`` is
+            GuiBuilder.exe itself; launching it with ``-m pip`` or ``-m PyInstaller``
+            simply starts another GuiBuilder process (often an empty GUI window).
+            Therefore frozen builds must resolve an external Python launcher.
+            """
+            if not self._is_frozen():
+                return [sys.executable]
+
+            # Windows Python launcher is a reliable choice when available.
+            py_launcher = shutil.which("py")
+            if py_launcher:
+                return [py_launcher]
+
+            candidates = [
+                shutil.which("python"),
+                shutil.which("python3"),
+            ]
+            for candidate in candidates:
+                if candidate:
+                    return [candidate]
+            return None
+
+        def _python_module_command(self, module: str, *args: str) -> Optional[List[str]]:
+            """Build a command for ``python -m <module>`` without relaunching GuiBuilder."""
+            python_cmd = self._external_python_command()
+            if not python_cmd:
+                return None
+            return [*python_cmd, "-m", module, *args]
+
+        def _pyinstaller_command(self) -> Optional[List[str]]:
+            """Return a command that invokes PyInstaller without launching GuiBuilder.exe."""
+            if not self._is_frozen():
+                return [sys.executable, "-m", "PyInstaller"]
+
+            # Prefer the standalone PyInstaller launcher in PATH.
+            pyinstaller_exe = shutil.which("pyinstaller")
+            if pyinstaller_exe:
+                return [pyinstaller_exe]
+
+            # Fall back to an external Python launcher.
+            return self._python_module_command("PyInstaller")
+
         def _pip_install(self, pip_name: str) -> bool:
             """Best-effort `pip install <pip_name>` in this same Python
             environment, retrying without --break-system-packages if the
             first attempt rejects that flag. Returns True on success.
             """
-            ret = subprocess.run(
-                [sys.executable, "-m", "pip", "install", pip_name,
-                 "--break-system-packages"],
-                capture_output=True, text=True
-                )
+            cmd = self._python_module_command("pip", "install", pip_name,
+                                             "--break-system-packages")
+            if cmd is None:
+                return False
+            ret = subprocess.run(cmd, capture_output=True, text=True)
             if ret.returncode != 0:
-                ret = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", pip_name],
-                    capture_output=True, text=True
-                    )
+                retry_cmd = self._python_module_command("pip", "install", pip_name)
+                if retry_cmd is None:
+                    return False
+                ret = subprocess.run(retry_cmd, capture_output=True, text=True)
             return ret.returncode == 0
 
         def _convert_to_exe(self, top: "tk.Toplevel",
@@ -808,18 +934,29 @@ class CodeMixin:
                         if importlib.util.find_spec(import_name) is None:
                             log_q.put(("status", f"Installing {pip_name}..."))
                             log(f"$ pip install {pip_name}")
-                            ret = _stream_process(
-                                [sys.executable, "-m", "pip", "install",
-                                 pip_name, "--break-system-packages"]
+                            pip_cmd = self._python_module_command(
+                                "pip", "install", pip_name, "--break-system-packages"
                                 )
+                            if pip_cmd is None:
+                                log(
+                                    "No external Python interpreter was found. "
+                                    "A frozen GuiBuilder cannot use GuiBuilder.exe "
+                                    "as its Python interpreter."
+                                )
+                                log_q.put(("done", (False, None)))
+                                return
+                            ret = _stream_process(pip_cmd)
                             if ret != 0:
                                 # Some environments don't recognize
                                 # --break-system-packages; retry without it
                                 # rather than failing outright on that alone.
-                                ret = _stream_process(
-                                    [sys.executable, "-m", "pip", "install",
-                                     pip_name]
+                                retry_pip_cmd = self._python_module_command(
+                                    "pip", "install", pip_name
                                     )
+                                if retry_pip_cmd is None:
+                                    log_q.put(("done", (False, None)))
+                                    return
+                                ret = _stream_process(retry_pip_cmd)
                             if ret != 0:
                                 log(f"Failed to install {pip_name}.")
                                 log_q.put(("done", (False, None)))
@@ -830,15 +967,25 @@ class CodeMixin:
                     if importlib.util.find_spec("PyInstaller") is None:
                         log_q.put(("status", "Installing PyInstaller..."))
                         log("$ pip install pyinstaller")
-                        ret = _stream_process(
-                            [sys.executable, "-m", "pip", "install",
-                             "pyinstaller", "--break-system-packages"]
+                        pip_cmd = self._python_module_command(
+                            "pip", "install", "pyinstaller", "--break-system-packages"
                             )
+                        if pip_cmd is None:
+                            log(
+                                "No external Python interpreter was found, so "
+                                "PyInstaller cannot be installed from the frozen builder."
+                            )
+                            log_q.put(("done", (False, None)))
+                            return
+                        ret = _stream_process(pip_cmd)
                         if ret != 0:
-                            ret = _stream_process(
-                                [sys.executable, "-m", "pip", "install",
-                                 "pyinstaller"]
+                            retry_pip_cmd = self._python_module_command(
+                                "pip", "install", "pyinstaller"
                                 )
+                            if retry_pip_cmd is None:
+                                log_q.put(("done", (False, None)))
+                                return
+                            ret = _stream_process(retry_pip_cmd)
                         if ret != 0:
                             log("Failed to install PyInstaller.")
                             log_q.put(("done", (False, None)))
@@ -864,8 +1011,18 @@ class CodeMixin:
                     dist_dir = os.path.join(build_dir, "dist")
                     work_dir = os.path.join(build_dir, "build")
 
+                    pyinstaller_cmd = self._pyinstaller_command()
+                    if pyinstaller_cmd is None:
+                        log(
+                            "PyInstaller could not be found. In a frozen GuiBuilder "
+                            "build, install PyInstaller in the external Python environment "
+                            "or make pyinstaller.exe available on PATH."
+                        )
+                        log_q.put(("done", (False, None)))
+                        return
+
                     cmd = [
-                        sys.executable, "-m", "PyInstaller",
+                        *pyinstaller_cmd,
                         "--noconfirm", "--onefile", "--windowed",
                         "--name", app_name,
                         "--distpath", dist_dir,
@@ -914,21 +1071,77 @@ class CodeMixin:
             log_top.after(100, _poll_log)
 
         def _open_code_editor(self, elem: Optional[DesignElement] = None):
+            existing = getattr(self, "_code_editor_window", None)
+            if existing is not None:
+                try:
+                    if existing.winfo_exists():
+                        existing.deiconify()
+                        existing.lift()
+                        existing.focus_force()
+                        return
+                except tk.TclError:
+                    pass
+                self._code_editor_window = None
+
             top = tk.Toplevel(self.root)
+            self._code_editor_window = top
             top.title(f"Code Editor - {elem.elem_type} (ID: {elem.elem_id})"
                       if elem is not None else "Code Editor")
             top.geometry("900x680")
             top.minsize(650, 450)
             top.configure(bg=self._panel_bg)
 
+            def _close_code_editor():
+                if getattr(self, "_code_editor_window", None) is top:
+                    self._code_editor_window = None
+                try:
+                    top.destroy()
+                except tk.TclError:
+                    pass
+
+            top.protocol("WM_DELETE_WINDOW", _close_code_editor)
+
             # Bring window to front and focus it
             top.lift()
             top.focus()
 
+            # --------------------------------------------------------------
+            # Find / Replace state
+            # --------------------------------------------------------------
+            find_var = tk.StringVar()
+            replace_var = tk.StringVar()
+            search_status_var = tk.StringVar(value="")
+            search_matches = []
+            current_match = [0]
+            search_generation = [0]
+
             editor_frame = tk.Frame(top, bg=self._panel_bg)
             editor_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-            editor_frame.grid_rowconfigure(0, weight=1)
+            editor_frame.grid_rowconfigure(1, weight=1)
             editor_frame.grid_columnconfigure(0, weight=1)
+
+            # Compact editor search bar. It stays above the editor and can be
+            # toggled with Ctrl+F / Ctrl+H so it does not permanently consume
+            # vertical space when the user is simply editing code.
+            search_frame = tk.Frame(editor_frame, bg=self._panel_bg)
+            search_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+            search_frame.grid_columnconfigure(1, weight=1)
+            search_frame.grid_columnconfigure(4, weight=1)
+
+            tk.Label(search_frame, text="Find:", bg=self._panel_bg,
+                     fg=self._panel_fg).grid(row=0, column=0, padx=(2, 4), sticky="w")
+            find_entry = tk.Entry(search_frame, textvariable=find_var,
+                                  relief="solid", bd=1)
+            find_entry.grid(row=0, column=1, padx=(0, 6), sticky="ew")
+
+            tk.Label(search_frame, text="Replace:", bg=self._panel_bg,
+                     fg=self._panel_fg).grid(row=0, column=2, padx=(2, 4), sticky="w")
+            replace_entry = tk.Entry(search_frame, textvariable=replace_var,
+                                     relief="solid", bd=1)
+            replace_entry.grid(row=0, column=3, padx=(0, 6), sticky="ew")
+
+            search_actions = tk.Frame(search_frame, bg=self._panel_bg)
+            search_actions.grid(row=0, column=5, sticky="e")
 
             text_widget = tk.Text(editor_frame, font=("Consolas", 10),
                                    bg="#E0FFFF", fg="black", wrap=tk.NONE,
@@ -943,15 +1156,182 @@ class CodeMixin:
             text_widget.configure(yscrollcommand=y_scroll.set,
                                    xscrollcommand=x_scroll.set
                                    )
-            text_widget.grid(row=0, column=0, sticky="nsew")
-            y_scroll.grid(row=0, column=1, sticky="ns")
-            x_scroll.grid(row=1, column=0, sticky="ew")
+            text_widget.grid(row=1, column=0, sticky="nsew")
+            y_scroll.grid(row=1, column=1, sticky="ns")
+            x_scroll.grid(row=2, column=0, sticky="ew")
             text_widget.tag_config("syntax_error", background="#FF4444",
                                     foreground="white"
                                     )
+            text_widget.tag_config("search_match", background="#FFF2CC",
+                                    foreground="black")
+            text_widget.tag_config("search_current", background="#FFD54F",
+                                    foreground="black")
 
             full_code = self._current_code
             text_widget.insert("1.0", full_code)
+
+            def _clear_search_tags():
+                try:
+                    text_widget.tag_remove("search_match", "1.0", tk.END)
+                    text_widget.tag_remove("search_current", "1.0", tk.END)
+                except tk.TclError:
+                    pass
+
+            def _collect_matches():
+                """Return every occurrence of the current Find text."""
+                query = find_var.get()
+                matches = []
+                if not query:
+                    return matches
+                pos = "1.0"
+                while True:
+                    found = text_widget.search(query, pos, stopindex=tk.END,
+                                               nocase=False)
+                    if not found:
+                        break
+                    end_pos = text_widget.index(f"{found} + {len(query)} chars")
+                    matches.append((found, end_pos))
+                    # Advance by one character to avoid missing overlapping
+                    # matches while still guaranteeing forward progress.
+                    next_pos = text_widget.index(f"{found} + 1 chars")
+                    if text_widget.compare(next_pos, ">=", tk.END):
+                        break
+                    pos = next_pos
+                return matches
+
+            def _update_search_display(preserve_position=False):
+                """Refresh result highlighting and the 'N of M' indicator."""
+                nonlocal search_matches
+                _clear_search_tags()
+                query = find_var.get()
+                if not query:
+                    search_matches = []
+                    current_match[0] = 0
+                    search_status_var.set("")
+                    return
+
+                old_anchor = None
+                if preserve_position and search_matches:
+                    old_index = min(max(current_match[0], 0), len(search_matches) - 1)
+                    old_anchor = search_matches[old_index][0]
+
+                search_matches = _collect_matches()
+                if not search_matches:
+                    current_match[0] = 0
+                    search_status_var.set("0 matches")
+                    return
+
+                # When the text changes, try to keep the same visible location;
+                # otherwise use the first match as the natural starting point.
+                new_index = 0
+                if old_anchor:
+                    for i, (start_idx, _) in enumerate(search_matches):
+                        if text_widget.compare(start_idx, "==", old_anchor):
+                            new_index = i
+                            break
+                current_match[0] = min(new_index, len(search_matches) - 1)
+
+                for start_idx, end_idx in search_matches:
+                    text_widget.tag_add("search_match", start_idx, end_idx)
+                start_idx, end_idx = search_matches[current_match[0]]
+                text_widget.tag_remove("search_match", start_idx, end_idx)
+                text_widget.tag_add("search_current", start_idx, end_idx)
+                text_widget.mark_set("insert", start_idx)
+                text_widget.see(start_idx)
+                search_status_var.set(
+                    f"{current_match[0] + 1} of {len(search_matches)} matches"
+                )
+
+            def _find_next(event=None):
+                if not search_matches and find_var.get():
+                    _update_search_display()
+                elif not find_var.get():
+                    _update_search_display()
+                    find_entry.focus_set()
+                    return "break"
+                if not search_matches:
+                    find_entry.focus_set()
+                    return "break"
+                current_match[0] = (current_match[0] + 1) % len(search_matches)
+                _update_search_display(preserve_position=True)
+                find_entry.focus_set()
+                return "break"
+
+            def _find_previous(event=None):
+                if not search_matches and find_var.get():
+                    _update_search_display()
+                elif not find_var.get():
+                    _update_search_display()
+                    find_entry.focus_set()
+                    return "break"
+                if not search_matches:
+                    find_entry.focus_set()
+                    return "break"
+                current_match[0] = (current_match[0] - 1) % len(search_matches)
+                _update_search_display(preserve_position=True)
+                find_entry.focus_set()
+                return "break"
+
+            def _replace_current():
+                if not find_var.get():
+                    return
+                if not search_matches:
+                    _update_search_display()
+                if not search_matches:
+                    return
+                start_idx, end_idx = search_matches[current_match[0]]
+                text_widget.delete(start_idx, end_idx)
+                text_widget.insert(start_idx, replace_var.get())
+                # Rebuild result positions because replacement can change text
+                # length. Stay on the next occurrence when one exists.
+                old_index = current_match[0]
+                _update_search_display()
+                if search_matches:
+                    current_match[0] = min(old_index, len(search_matches) - 1)
+                    _clear_search_tags()
+                    for s_idx, e_idx in search_matches:
+                        text_widget.tag_add("search_match", s_idx, e_idx)
+                    s_idx, e_idx = search_matches[current_match[0]]
+                    text_widget.tag_remove("search_match", s_idx, e_idx)
+                    text_widget.tag_add("search_current", s_idx, e_idx)
+                    text_widget.mark_set("insert", s_idx)
+                    text_widget.see(s_idx)
+                    search_status_var.set(
+                        f"{current_match[0] + 1} of {len(search_matches)} matches"
+                    )
+
+            def _replace_all():
+                query = find_var.get()
+                if not query:
+                    return
+                replacement = replace_var.get()
+                matches = _collect_matches()
+                if not matches:
+                    _update_search_display()
+                    return
+                # Replace backwards so earlier positions remain valid.
+                for start_idx, end_idx in reversed(matches):
+                    text_widget.delete(start_idx, end_idx)
+                    text_widget.insert(start_idx, replacement)
+                _update_search_display()
+
+            def _find_entry_changed(*args):
+                search_generation[0] += 1
+                _update_search_display()
+
+            find_var.trace_add("write", _find_entry_changed)
+
+            self._flat_button(search_actions, "Previous", _find_previous,
+                              side=tk.LEFT, padx=2)
+            self._flat_button(search_actions, "Next", _find_next,
+                              side=tk.LEFT, padx=2)
+            self._flat_button(search_actions, "Replace", _replace_current,
+                              side=tk.LEFT, padx=2)
+            self._flat_button(search_actions, "Replace All", _replace_all,
+                              side=tk.LEFT, padx=2)
+            tk.Label(search_frame, textvariable=search_status_var, width=18,
+                     anchor="e", bg=self._panel_bg, fg=self._muted_fg).grid(
+                         row=1, column=5, sticky="e", padx=(0, 3), pady=(3, 0))
 
             method_name = (f"_on_{elem.elem_type}_{elem.elem_id}"
                             if elem is not None else None)
@@ -1019,6 +1399,10 @@ class CodeMixin:
                     except Exception:
                         pass
                 _syntax_timer_id[0] = top.after(400, _check_syntax)
+                # Code edits can invalidate match offsets, so refresh the
+                # search index as the editor contents change.
+                if find_var.get():
+                    top.after_idle(lambda: _update_search_display())
 
             def _update_line_col(event=None):
                 try:
@@ -1085,6 +1469,8 @@ class CodeMixin:
                         text_widget.mark_set("insert", pos)
                         text_widget.see(pos)
                         text_widget.xview_moveto(0.0)
+                if find_var.get():
+                    _update_search_display()
 
             def open_in_vscode():
                 edited_code = text_widget.get("1.0", tk.END)
@@ -1106,13 +1492,26 @@ class CodeMixin:
             self._flat_button(btn_frame, "💾 Save", save_code,
                               accent=True, side=tk.LEFT, padx=2)
             self._flat_button(btn_frame, "💻 Open in VS Code", open_in_vscode,
-                              side=tk.LEFT, padx=2,accent=True)
+                              side=tk.LEFT, padx=2, accent=True)
 
             self._flat_button(btn_frame, "📦 Convert To EXE",
                               lambda: self._convert_to_exe(top, text_widget),
-                              side=tk.LEFT, padx=50,accent=True)
-            self._flat_button(btn_frame, "Close", top.destroy,
+                              side=tk.LEFT, padx=50, accent=True)
+            self._flat_button(btn_frame, "Close", _close_code_editor,
                               side=tk.RIGHT, padx=2)
+
+            # Conventional editor shortcuts:
+            # Ctrl+F = focus Find, Ctrl+H = focus Replace, F3/Shift+F3 navigate.
+            def _focus_find(event=None):
+                find_entry.focus_set()
+                find_entry.selection_range(0, tk.END)
+                return "break"
+
+            def _focus_replace(event=None):
+                replace_entry.focus_set()
+                replace_entry.selection_range(0, tk.END)
+                return "break"
+
             text_widget.bind("<KeyRelease>",
                               lambda event: (_schedule_check(), _update_line_col()),
                               add="+"
@@ -1121,6 +1520,13 @@ class CodeMixin:
             text_widget.bind("<Control-s>",
                               lambda event: (save_code(), "break")[1]
                               )
+            text_widget.bind("<Control-f>", _focus_find, add="+")
+            text_widget.bind("<Control-h>", _focus_replace, add="+")
+            find_entry.bind("<Return>", _find_next)
+            replace_entry.bind("<Return>", _replace_current)
+            top.bind("<F3>", _find_next)
+            top.bind("<Shift-F3>", _find_previous)
+            top.bind("<Escape>", lambda event: (_clear_search_tags(), search_status_var.set(""), text_widget.focus_set()))
 
             text_widget.focus_set()
             top.after(50, top.lift)  # Extra lift call after UI renders
