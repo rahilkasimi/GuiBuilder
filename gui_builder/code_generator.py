@@ -4,6 +4,40 @@ from .config import *
 from .models import DesignElement
 from .instrumentation_widgets import INSTRUMENTATION_RUNTIME_CODE
 
+# Generated apps that use an instrumentation widget (PushButton, LEDDisplay,
+# Gauge, etc.) no longer get INSTRUMENTATION_RUNTIME_CODE spliced directly
+# into MainApplication's own file. That used to bury a few hundred lines of
+# widget-implementation code above every user's own code on every single
+# open of the editor. Instead it's written out as its own module
+# (INSTRUMENTATION_MODULE_NAME + ".py", see
+# CodeGenerator.instrumentation_module_source()) and MainApplication's file
+# just imports the classes it needs from it, same as any other dependency.
+INSTRUMENTATION_MODULE_NAME = "builder_instrumentation_widgets"
+INSTRUMENTATION_MODULE_CLASSES = [
+    "BuilderPushButton", "BuilderRadioButton", "BuilderLEDDisplay",
+    "BuilderLEDIndicator", "BuilderGauge", "BuilderMeasurementDisplay",
+]
+INSTRUMENTATION_IMPORT_LINE = (
+    f"from {INSTRUMENTATION_MODULE_NAME} import "
+    f"({', '.join(INSTRUMENTATION_MODULE_CLASSES)})"
+)
+
+# ─── Designer / user module split ───────────────────────────────────────────
+#
+# Two-file model (WinForms Form1.cs / Form1.Designer.cs style): every
+# exported app is now DESIGNER_MODULE_NAME + ".py" (100% auto-generated,
+# regenerated wholesale on every design change, never hand-edited) plus
+# USER_MODULE_NAME + ".py" (scaffolded exactly once, then owned entirely by
+# the user forever after). See CodeGenerator.generate_designer_module() and
+# CodeGenerator.generate_user_module_scaffold(). Ownership is a *file*
+# boundary rather than a region inferred from text, which is what makes the
+# designer file safe to fully regenerate on every change with no diffing,
+# splicing, or bail-out logic of any kind.
+DESIGNER_MODULE_NAME = "main_app_designer"
+DESIGNER_CLASS_NAME = "_MainApplicationDesigner"
+USER_MODULE_NAME = "main_app"
+USER_CLASS_NAME = "MainApplication"
+
 
 # ─── CodeGenerator ──────────────────────────────────────────────────────────
 #
@@ -17,6 +51,19 @@ from .instrumentation_widgets import INSTRUMENTATION_RUNTIME_CODE
 # DesignElement into widget-creation code.
 
 class CodeGenerator:
+    @staticmethod
+    def _geometry_dimensions(window_size: Tuple[int, int]) -> Tuple[int, int]:
+        """Return Tk geometry dimensions as real integers.
+
+        Canvas dimensions can be stored internally as floats (for example
+        420.0), but Tk's ``wm geometry`` parser requires integer width and
+        height values such as ``420x435``.
+        """
+        return (
+            int(round(float(window_size[0]))),
+            int(round(float(window_size[1]))),
+        )
+
     @staticmethod
     def _container_depth(
             elem: DesignElement, by_id: Dict[int, DesignElement]
@@ -133,6 +180,25 @@ class CodeGenerator:
             f"text='[Image Error]'{bg_kw})"
         )
         return "\n".join(lines)
+
+    @staticmethod
+    def _datetimepicker_widget_lines(elem: DesignElement, var_name: str, parent_name: str):
+        p = elem.props
+        display_format = str(p.get("display_format", "Date & Time") or "Date & Time")
+        custom_format = str(p.get("custom_format", "") or "").strip()
+        initial = str(p.get("initial_datetime", "") or "").strip()
+        date_pattern = str(p.get("date_pattern", "yyyy-mm-dd") or "yyyy-mm-dd")
+        return (
+            f"        {var_name} = BuilderDateTimePicker({parent_name}, "
+            f"display_format={json.dumps(display_format)}, "
+            f"custom_format={json.dumps(custom_format)}, "
+            f"initial_value={json.dumps(initial)}, "
+            f"date_pattern={json.dumps(date_pattern)}, "
+            f"time_format={json.dumps(str(p.get('time_format', '24h')))}, "
+            f"font={json.dumps(tuple(p.get('font', ('Segoe UI', 9))))}, "
+            f"bg={json.dumps(str(p.get('bg', '#FFFFFF')))}, "
+            f"fg={json.dumps(str(p.get('fg', '#212121')))})"
+        )
 
     @staticmethod
     def _calendar_widget_line(
@@ -330,6 +396,28 @@ class CodeGenerator:
                 "        pass",
                 "root.after(10, _apply_window_state)",
             ]
+        elif window_state == "Centered":
+            body = [
+                "def _apply_window_state():",
+                "    try:",
+                "        root.update_idletasks()",
+                "        w = root.winfo_width()",
+                "        h = root.winfo_height()",
+                "        if w <= 1 or h <= 1:",
+                "            geo = root.geometry().split('+')[0]",
+                "            parts = geo.split('x')",
+                "            w = int(float(parts[0]))",
+                "            h = int(float(parts[1]))",
+                "        sw = root.winfo_screenwidth()",
+                "        sh = root.winfo_screenheight()",
+                "        x = max(0, (sw - w) // 2)",
+                "        y = max(0, (sh - h) // 2)",
+                "        root.geometry(f\"{w}x{h}+{x}+{y}\")",
+                "    except Exception:",
+                "        pass",
+                "root.after(10, _apply_window_state)",
+                "root.after(250, _apply_window_state)",
+            ]
         else:
             body = []
         if window_locked:
@@ -343,6 +431,17 @@ class CodeGenerator:
                 "    pass",
             ])
         return [indent + line for line in body]
+
+    @staticmethod
+    def instrumentation_module_source() -> str:
+        """Return the standalone source for builder_instrumentation_widgets.py.
+
+        Written alongside the generated MainApplication file (preview temp
+        dir, EXE build dir, VS Code temp file) whenever the generated code
+        contains INSTRUMENTATION_IMPORT_LINE, so that import actually
+        resolves at run/build time.
+        """
+        return INSTRUMENTATION_RUNTIME_CODE.strip("\n") + "\n"
 
     @staticmethod
     def _instrumentation_types() -> set:
@@ -404,6 +503,7 @@ class CodeGenerator:
             return (
                 f"        {var_name} = BuilderLEDDisplay({parent_name}, mode='Multi Digit', "
                 f"value={q('value', '120')}, digits={repr(props.get('digits', 3) or 3)}, "
+                f"decimal_places={repr(props.get('decimal_places', 0) or 0)}, "
                 f"color={q('color', '#00FF66')}, off_color={q('off_color', '#16351F')}, "
                 f"brightness={repr(props.get('brightness', 100) or 100)}, glow={q('glow', 'Yes')}, "
                 f"leading_zeros={q('leading_zeros', 'No')}, segment_width={repr(props.get('segment_width', 4) or 4)}, digit_gap={repr(props.get('digit_gap', 12) or 12)}, "
@@ -431,10 +531,15 @@ class CodeGenerator:
             return (
                 f"        {var_name} = BuilderMeasurementDisplay({parent_name}, label={q('label', 'Temperature')}, "
                 f"value={q('value', '24')}, unit={q('unit', '°C')}, style={q('style', 'Modern')}, "
-                f"color={q('color', '#1976D2')}, bg={q('bg', '#FFFFFF')}, "
+                f"color={q('value_color', props.get('color', '#1976D2'))}, bg={q('bg', '#FFFFFF')}, "
                 f"decimal_places={repr(props.get('decimal_places', 0) or 0)}, prefix={q('prefix', '')}, "
                 f"suffix={q('suffix', '')}, secondary_text={q('secondary_text', '')}, "
-                f"secondary_color={q('secondary_color', '#666666')}, align={q('align', 'center')}, "
+                f"secondary_color={q('secondary_text_color', props.get('secondary_color', '#666666'))}, align={q('align', 'center')}, "
+                f"label_font={repr(props.get('label_font', ('Segoe UI', 9, 'bold')))}, label_color={q('label_color', props.get('secondary_color', '#666666'))}, "
+                f"value_font={repr(props.get('value_font', ('Segoe UI', 34, 'bold')))}, "
+                f"value_color={q('value_color', props.get('color', '#1976D2'))}, unit_font={repr(props.get('unit_font', ('Segoe UI', 12)))}, "
+                                f"secondary_font={repr(props.get('secondary_font', ('Segoe UI', 10)))}, "
+                f"secondary_text_color={q('secondary_text_color', props.get('secondary_color', '#666666'))}, unit_gap={repr(props.get('unit_gap', 18) or 18)}, "
                 f"led_digits={repr(props.get('led_digits', 3) or 3)}, width={width}, height={height})"
             )
         raise ValueError(f"Unsupported instrumentation type: {elem.elem_type}")
@@ -557,10 +662,17 @@ class CodeGenerator:
 
         bindings = []
         for e in all_elements:
-            if e.handler_code.strip():
-                event = DEFAULT_EVENT_MAP.get(e.elem_type)
-                if event:
-                    bindings.append((e, event, f"self._elem_{e.elem_id}"))
+            # Every element with a default event gets wired unconditionally
+            # now -- there's no more "does this element have handler code
+            # yet" question to ask, since handler bodies no longer live on
+            # the model at all (see models.py). The target method is
+            # guaranteed to exist by the time this runs because
+            # CodeMixin._ensure_handler_stub() creates it in the user
+            # module at element-creation time, before this can ever be
+            # reached at runtime.
+            event = DEFAULT_EVENT_MAP.get(e.elem_type)
+            if event:
+                bindings.append((e, event, f"self._elem_{e.elem_id}"))
 
         listbox_items = props.pop("items", []) if elem.elem_type == "Listbox" else []
         notebook_tabs = props.pop("tabs", ["Tab 1", "Tab 2"]) if elem.elem_type == "Notebook" else []
@@ -581,6 +693,16 @@ class CodeGenerator:
         # SKIPPED_GENERIC_PROPS in config.py for the (small) set of keys
         # that aren't, either because they're design-time-only controls or
         # because a dedicated code block elsewhere handles them instead.
+        effective_relief = None
+        if elem.elem_type in ("Label", "Frame"):
+            raw_bw = props.get("border_width", props.get("bd", ""))
+            try:
+                bw_value = int(float(raw_bw)) if str(raw_bw).strip() else 0
+            except (TypeError, ValueError):
+                bw_value = 0
+            raw_relief = str(props.get("relief", "flat") or "flat")
+            effective_relief = "solid" if bw_value > 0 and raw_relief == "flat" else raw_relief
+
         prop_strs = []
         color_keys = {
             "fg", "bg", "activebackground", "activeforeground",
@@ -614,6 +736,9 @@ class CodeGenerator:
             elif k == "textvariable":
                 if v:
                     prop_strs.append(f"textvariable=self.{v}")
+                continue
+            elif k == "relief" and effective_relief is not None:
+                prop_strs.append(f"relief={json.dumps(effective_relief)}")
                 continue
             elif k in ("border_width", "bd"):
                 # ttk widgets do not accept tkinter's constructor-level `bd`
@@ -717,6 +842,8 @@ class CodeGenerator:
             widget_line = CodeGenerator._image_widget_line(elem, var_name, parent_name)
         elif elem.elem_type == "Calendar":
             widget_line = CodeGenerator._calendar_widget_line(elem, var_name, parent_name)
+        elif elem.elem_type == "DateTimePicker":
+            widget_line = CodeGenerator._datetimepicker_widget_lines(elem, var_name, parent_name)
         elif elem.elem_type == "Combobox":
             widget_line = CodeGenerator._combobox_widget_line(elem, var_name, parent_name)
         else:
@@ -820,251 +947,339 @@ class CodeGenerator:
         if elem.elem_type == "RadioButton" and str(elem.props.get("selected", "No")).strip().lower() in ("yes", "1", "true"):
             extra_lines.append(f"        {var_name}.select()")
 
+        if elem.elem_type == "LinkLabel":
+            link_url = str(elem.props.get("url") or "").strip()
+            if link_url:
+                # add='+' so this coexists with the normal _on_LinkLabel_N
+                # <Button-1> handler stub -- opening the URL doesn't need
+                # to stop the user's own click handler (if any) from
+                # running too.
+                extra_lines.append(
+                    f"        {var_name}.bind('<Button-1>', "
+                    f"lambda e, _u={json.dumps(link_url)}: webbrowser.open(_u), add='+')"
+                )
+
         if tooltip_val:
             extra_lines.append(
                 f"        _ToolTip({var_name}, {json.dumps(str(tooltip_val))})"
             )
 
+        image_path = str(elem.props.get("image_path") or "").strip()
+        if image_path:
+            extra_lines.append(f"        apply_background({var_name},{json.dumps(image_path)}, {json.dumps(str(elem.props.get('image_mode','Fit')))}, {json.dumps(str(elem.props.get('image_anchor','Center')))} )")
+            # Content Alignment / Image + Text belong to the image presentation
+            # layer.  Do not emit apply_content() for a normal Label/Button/etc.
+            # when no image is assigned; otherwise it can overwrite the widget's
+            # native justification/anchor behavior.
+            if elem.props.get("content_anchor") or elem.props.get("compound"):
+                extra_lines.append(f"        apply_content({var_name},{json.dumps(str(elem.props.get('content_anchor','center')))}, {json.dumps(str(elem.props.get('compound','none')))} )")
+
         place_line = CodeGenerator._place_line(elem, var_name, rel_x, rel_y)
 
         return widget_line, place_line, extra_lines
 
-    # ─── Full-script generation ─────────────────────────────────────────────
+    # ─── Designer / user module generation ──────────────────────────────────
+    #
+    # generate_designer_module() and generate_user_module_scaffold() are the
+    # two-file replacement for generate()/_empty_template() below (kept for
+    # reference but no longer called anywhere in the live editing path).
+    # generate_designer_module() reuses generate_element_lines() exactly as
+    # generate() did -- still exactly one place that knows how to turn a
+    # DesignElement into widget-creation code -- it just never emits
+    # anything derived from custom_module_code / custom_class_code /
+    # handler_code, because those no longer exist as separate pieces of
+    # state to reinject: they simply ARE the user module's file content.
+
     @staticmethod
-    def generate(
+    def _augment_imports(
+            elements: List[DesignElement], canvas_imports: str,
+            window_state: str
+    ) -> str:
+        """Add any per-element-type imports (pandas/PIL/tkcalendar) and the
+        Maximized-state platform import. Factored out of generate() so
+        generate_designer_module() doesn't reimplement the same detection.
+        """
+        if (any(e.elem_type == "Table" for e in elements)
+                and "import pandas as pd" not in canvas_imports):
+            canvas_imports = canvas_imports.rstrip() + "\nimport pandas as pd"
+        if any(e.elem_type == "Image" or e.props.get("image_path") for e in elements):
+            if "import os" not in canvas_imports:
+                canvas_imports = canvas_imports.rstrip() + "\nimport os"
+            if "from PIL import Image, ImageTk" not in canvas_imports:
+                canvas_imports = (canvas_imports.rstrip()
+                                   + "\nfrom PIL import Image, ImageTk")
+            if "from builder_image_support import apply_background, apply_content" not in canvas_imports:
+                canvas_imports = (canvas_imports.rstrip() + "\nfrom builder_image_support import apply_background, apply_content")
+        if any(e.elem_type == "Calendar" for e in elements):
+            if "from tkcalendar import Calendar" not in canvas_imports:
+                canvas_imports = (canvas_imports.rstrip()
+                                   + "\nfrom tkcalendar import Calendar")
+            if "from datetime import date" not in canvas_imports:
+                canvas_imports = (canvas_imports.rstrip()
+                                   + "\nfrom datetime import date")
+        if any(e.elem_type == "DateTimePicker" for e in elements):
+            if "from builder_image_support import BuilderDateTimePicker" not in canvas_imports:
+                canvas_imports = canvas_imports.rstrip() + "\nfrom builder_image_support import BuilderDateTimePicker"
+        if any(e.elem_type == "LinkLabel" and str(e.props.get("url") or "").strip()
+               for e in elements):
+            if "import webbrowser" not in canvas_imports:
+                canvas_imports = canvas_imports.rstrip() + "\nimport webbrowser"
+        if (window_state == "Maximized"
+                and "import platform" not in canvas_imports):
+            canvas_imports = canvas_imports.rstrip() + "\nimport platform"
+        return canvas_imports
+
+    @staticmethod
+    def _handler_stub_body(
+            elem_type: str, elem_id: int, event: str, var_name: str
+    ) -> List[str]:
+        """The placeholder body used both when scaffolding a brand new user
+        module and whenever CodeMixin._ensure_handler_stub appends a fresh
+        stub to an existing one. Kept in one place so the text a stub is
+        *generated* with always matches what placeholder-detection code
+        elsewhere looks for.
+        """
+        return [
+            '        """',
+            f'        Event handler for {elem_type} (ID: {elem_id}).',
+            f'        Triggered by: {event}',
+            f'        Access widget instance via: {var_name}',
+            '        """',
+            '        pass',
+        ]
+
+    @staticmethod
+    def generate_designer_module(
             elements: List[DesignElement], window_title: str,
             window_size: Tuple[int, int], canvas_bg: str, canvas_imports: str,
-            custom_module_code: str = "", custom_class_code: str = "",
-            window_state: str = "Normal", window_locked: bool = False
+            window_state: str = "Normal", window_locked: bool = False,
+            designer_class_name: str = DESIGNER_CLASS_NAME,
+            canvas_bg_image: str = "", canvas_bg_image_mode: str = "Fit", canvas_bg_image_anchor: str = "Center",
     ) -> str:
-        if not elements:
-            return CodeGenerator._empty_template(window_title, window_size,
-                                                  canvas_bg, canvas_imports,
-                                                  custom_module_code,
-                                                  custom_class_code,
-                                                  window_state, window_locked)
+        """Generate the fully auto-managed designer module.
 
-        has_table = any(e.elem_type == "Table" for e in elements)
-        if has_table and "import pandas as pd" not in canvas_imports:
-            canvas_imports = canvas_imports.rstrip() + "\nimport pandas as pd"
-
-        has_image = any(e.elem_type == "Image" for e in elements)
-        if has_image:
+        This is the Python analogue of a WinForms Form1.Designer.cs /
+        InitializeComponent(): every line here is derived purely from the
+        element model, and the whole file is safe to regenerate wholesale
+        on every change -- there is deliberately no splice/patch/bail-out
+        logic anywhere in this method, because nothing hand-written is
+        ever allowed to live in this file. Do not add a parameter here for
+        custom_module_code / custom_class_code / handler_code -- that
+        would reintroduce exactly the generator/user ambiguity this split
+        exists to remove. User code lives exclusively in the separate,
+        never-auto-regenerated user module; see
+        generate_user_module_scaffold() and
+        CodeMixin._ensure_handler_stub().
+        """
+        window_size = CodeGenerator._geometry_dimensions(window_size)
+        canvas_imports = CodeGenerator._augment_imports(
+            elements, canvas_imports, window_state
+        )
+        # The form/canvas background image is also generated by this module.
+        # Ensure the shared runtime helper is imported even when no child
+        # element itself has an image.
+        if canvas_bg_image:
             if "import os" not in canvas_imports:
                 canvas_imports = canvas_imports.rstrip() + "\nimport os"
             if "from PIL import Image, ImageTk" not in canvas_imports:
                 canvas_imports = canvas_imports.rstrip() + "\nfrom PIL import Image, ImageTk"
+            if "from builder_image_support import apply_background, apply_content" not in canvas_imports:
+                canvas_imports = (canvas_imports.rstrip()
+                                   + "\nfrom builder_image_support import apply_background, apply_content")
 
-        has_calendar = any(e.elem_type == "Calendar" for e in elements)
-        if has_calendar:
-            if "from tkcalendar import Calendar" not in canvas_imports:
-                canvas_imports = canvas_imports.rstrip() + "\nfrom tkcalendar import Calendar"
-            if "from datetime import date" not in canvas_imports:
-                canvas_imports = canvas_imports.rstrip() + "\nfrom datetime import date"
-
-        if window_state == "Maximized" and "import platform" not in canvas_imports:
-            canvas_imports = canvas_imports.rstrip() + "\nimport platform"
-
-        by_id = {e.elem_id: e for e in elements}
-        class_body: List[str] = []
-        class_body.append("    def __init__(self, root):")
-        class_body.append("        self.root = root")
-        class_body.append(f"        root.title({json.dumps(window_title)})")
-        class_body.append(
-            f"        root.geometry({json.dumps(f'{int(round(float(window_size[0])))}x{int(round(float(window_size[1])))}')})"
+        has_instrumentation = any(
+            e.elem_type in CodeGenerator._instrumentation_types()
+            for e in elements
         )
-        class_body.append(
-            f"        root.configure(bg={json.dumps(canvas_bg)})"
-        )
-        class_body.extend(
-            CodeGenerator._window_state_lines(window_state, "        ", window_locked)
-        )
-        class_body.append("")
-
-        vars_to_create = {}
-        for elem in elements:
-            if elem.elem_type in ("Radiobutton", "RadioButton", "Checkbutton"):
-                var_name = elem.props.get("variable")
-                if var_name and var_name not in vars_to_create:
-                    var_type = "tk.IntVar(value=0)" if elem.elem_type == "Checkbutton" else "tk.StringVar(value='')"
-                    vars_to_create[var_name] = var_type
-            elif elem.elem_type == "Entry":
-                var_name = elem.props.get("textvariable")
-                if var_name and var_name not in vars_to_create:
-                    vars_to_create[var_name] = "tk.StringVar(value='')"
-        for v_name, v_type in vars_to_create.items():
-            class_body.append(f"        self.{v_name} = {v_type}")
-        if vars_to_create:
-            class_body.append("")
-
-        bindings = []
-        for elem in elements:
-            if elem.handler_code.strip():
-                event = DEFAULT_EVENT_MAP.get(elem.elem_type)
-                if event:
-                    bindings.append(
-                        (elem, event, f"self._elem_{elem.elem_id}")
-                    )
-
-        # Order elements: containers first, then by depth, then by id
-        depths = {}
-        for e in elements:
-            depths[e.elem_id] = CodeGenerator._container_depth(e, by_id)
-        ordered = sorted(elements, key=lambda e: (
-            not (e.elem_type in CONTAINER_TYPES),  # containers first (False < True)
-            depths.get(e.elem_id, 0),
-            e.elem_id
-        ))
-
-        for elem in ordered:
-            widget_line, place_line, extra_lines = CodeGenerator.generate_element_lines(
-                elem, elements
-            )
-            class_body.extend(widget_line.splitlines())
-            class_body.extend(extra_lines)
-            class_body.append(place_line)
-
-        scrollbar_bindings = CodeGenerator._scrollbar_binding_lines(elements)
-        if scrollbar_bindings:
-            class_body.append("")
-            class_body.extend(scrollbar_bindings)
-
-        instrumentation_bindings = CodeGenerator._instrumentation_binding_lines(elements)
-        if instrumentation_bindings:
-            class_body.append("")
-            class_body.extend(instrumentation_bindings)
-
-        # --- Bindings and handler methods ---
-        for elem, event, var_name in bindings:
-            if event != "command":
-                method_name = f"_on_{elem.elem_type}_{elem.elem_id}"
-                class_body.append(
-                    f"        {var_name}.bind('{event}', self.{method_name})"
-                )
-
-        for elem, event, var_name in bindings:
-            method_name = f"_on_{elem.elem_type}_{elem.elem_id}"
-            class_body.append("")
-            class_body.append(f"    def {method_name}(self, event=None):")
-
-            if not elem.handler_code.strip():
-                class_body.append(f'        """')
-                class_body.append(f'        Event handler for {elem.elem_type} (ID: {elem.elem_id}).')
-                class_body.append(f'        Triggered by: {event}')
-                class_body.append(f'        Access widget instance via: {var_name}')
-                class_body.append(f'        """')
-                class_body.append(f"        pass")
-            else:
-                code_lines = elem.handler_code.strip().splitlines()
-                for cline in code_lines:
-                    class_body.append(
-                        f"        {cline}" if cline.strip() else "        "
-                    )
-
-        class_body.append("")
-        main_guard = [
-            "", "if __name__ == '__main__':", "    root = tk.Tk()",
-            "    app = MainApplication(root)", "    root.mainloop()",
-        ]
+        if (has_instrumentation
+                and INSTRUMENTATION_IMPORT_LINE not in canvas_imports):
+            canvas_imports = (canvas_imports.rstrip("\n") + "\n"
+                               + INSTRUMENTATION_IMPORT_LINE)
 
         has_tooltips = any(e.props.get("tooltip") for e in elements)
-        has_instrumentation = any(
-            e.elem_type in CodeGenerator._instrumentation_types() for e in elements
-        )
-        helper_block = []
-        if has_instrumentation:
-            helper_block.extend([INSTRUMENTATION_RUNTIME_CODE.rstrip("\n"), ""])
-        if has_tooltips:
-            helper_block.extend([TOOLTIP_HELPER_CODE, ""])
+        helper_block = [TOOLTIP_HELPER_CODE, ""] if has_tooltips else []
 
-        # Any code the user typed into the code editor that wasn't part of
-        # the recognized boilerplate/handler regions -- module-level
-        # constants, dicts, extra imports, standalone functions, or extra
-        # methods appended to the class -- gets captured separately (see
-        # _extract_custom_regions) specifically so a later full regenerate
-        # (adding an element, undo/redo, etc.) doesn't silently wipe it.
-        module_block = ([custom_module_code.rstrip("\n"), ""]
-                         if custom_module_code.strip() else [])
-        if custom_class_code.strip():
-            class_body.append("")
-            class_body.extend(custom_class_code.rstrip("\n").splitlines())
+        ui_body: List[str] = ["        root = self.root"]
+        ui_body.append(f"        root.title({json.dumps(window_title)})")
+        ui_body.append(
+            f"        root.geometry("
+            f"{json.dumps(f'{window_size[0]}x{window_size[1]}')})"
+        )
+        ui_body.append(f"        root.configure(bg={json.dumps(canvas_bg)})")
+        if canvas_bg_image:
+            ui_body.append(f"        apply_background(root,{json.dumps(str(canvas_bg_image))},{json.dumps(str(canvas_bg_image_mode))},{json.dumps(str(canvas_bg_image_anchor))})")
+        ui_body.extend(
+            CodeGenerator._window_state_lines(
+                window_state, "        ", window_locked
+            )
+        )
+        ui_body.append("")
+
+        if not elements:
+            ui_body.extend([
+                '        label = tk.Label(',
+                '            root, text="Add elements from the toolbox '
+                'to begin!",',
+                f'            font=("Segoe UI", 10), bg={json.dumps(canvas_bg)}',
+                "        )",
+                "        label.place(x=10, y=10, width=300, height=30)",
+            ])
+        else:
+            by_id = {e.elem_id: e for e in elements}
+
+            vars_to_create = {}
+            for elem in elements:
+                if elem.elem_type in ("Radiobutton", "RadioButton", "Checkbutton"):
+                    var_name = elem.props.get("variable")
+                    if var_name and var_name not in vars_to_create:
+                        vars_to_create[var_name] = (
+                            "tk.IntVar(value=0)"
+                            if elem.elem_type == "Checkbutton"
+                            else "tk.StringVar(value='')"
+                        )
+                elif elem.elem_type == "Entry":
+                    var_name = elem.props.get("textvariable")
+                    if var_name and var_name not in vars_to_create:
+                        vars_to_create[var_name] = "tk.StringVar(value='')"
+            for v_name, v_type in vars_to_create.items():
+                ui_body.append(f"        self.{v_name} = {v_type}")
+            if vars_to_create:
+                ui_body.append("")
+
+            depths = {
+                e.elem_id: CodeGenerator._container_depth(e, by_id)
+                for e in elements
+            }
+            ordered = sorted(elements, key=lambda e: (
+                not (e.elem_type in CONTAINER_TYPES),
+                depths.get(e.elem_id, 0),
+                e.elem_id
+            ))
+
+            for elem in ordered:
+                widget_line, place_line, extra_lines = (
+                    CodeGenerator.generate_element_lines(elem, elements)
+                )
+                ui_body.extend(widget_line.splitlines())
+                ui_body.extend(extra_lines)
+                ui_body.append(place_line)
+
+                # Every element with a non-command default event gets its
+                # bind() line here unconditionally -- unlike the old
+                # generate(), this no longer depends on whether
+                # elem.handler_code happens to be non-empty (that concept
+                # doesn't exist anymore). The target method is resolved at
+                # runtime via inheritance from the user module's
+                # MainApplication; CodeMixin._ensure_handler_stub() is what
+                # guarantees that method actually exists there before this
+                # line can ever run.
+                event = DEFAULT_EVENT_MAP.get(elem.elem_type)
+                if event and event != "command":
+                    var_name = f"self._elem_{elem.elem_id}"
+                    method_name = f"_on_{elem.elem_type}_{elem.elem_id}"
+                    ui_body.append(
+                        f"        {var_name}.bind('{event}', "
+                        f"self.{method_name})"
+                    )
+
+            scrollbar_bindings = CodeGenerator._scrollbar_binding_lines(elements)
+            if scrollbar_bindings:
+                ui_body.append("")
+                ui_body.extend(scrollbar_bindings)
+
+            instrumentation_bindings = (
+                CodeGenerator._instrumentation_binding_lines(elements)
+            )
+            if instrumentation_bindings:
+                ui_body.append("")
+                ui_body.extend(instrumentation_bindings)
+
+        class_body = [
+            f"class {designer_class_name}:",
+            '    """Auto-generated by Tkinter Visual Designer.',
+            '',
+            '    This entire file is regenerated from scratch every time the',
+            '    design changes. DO NOT hand-edit it -- edits here will be',
+            f'    silently discarded. Add your own code (event handlers,',
+            f'    helper methods, extra imports) to {USER_MODULE_NAME}.py',
+            f'    instead, in the {USER_CLASS_NAME} subclass there.',
+            '    """',
+            "",
+            "    def _build_ui(self):",
+        ]
+        class_body.extend(ui_body)
 
         return "\n".join([
-                             '"""Generated by Tkinter Visual Designer."""', "",
-                             canvas_imports, "",
-                             *helper_block,
-                             *module_block,
-                             "class MainApplication:", *class_body, *main_guard,
-                         ]
-                         )
-
-    @staticmethod
-    def _empty_template(
-            window_title: str, window_size: Tuple[int, int], canvas_bg: str,
-            canvas_imports: str, custom_module_code: str = "",
-            custom_class_code: str = "",
-            window_state: str = "Normal", window_locked: bool = False
-    ) -> str:
-        """Generate a valid MainApplication even for an empty canvas.
-
-        Keeping the same class/entry-point contract as non-empty designs is
-        important because Run Preview instantiates MainApplication against a
-        Toplevel parent. Standalone exports still use Tk() in the main guard.
-        """
-        if window_state == "Maximized" and "import platform" not in canvas_imports:
-            canvas_imports = canvas_imports.rstrip() + "\nimport platform"
-
-        # Custom class code is captured at method indentation (4 spaces);
-        # restore it under MainApplication.
-        class_methods = []
-        if custom_class_code.strip():
-            class_methods.extend(
-                custom_class_code.rstrip("\n").splitlines()
-            )
-
-        body = [
-            '"""Generated by Tkinter Visual Designer."""',
+            '"""Auto-generated by Tkinter Visual Designer. Do not edit by '
+            'hand -- see main_app.py."""',
             "",
             canvas_imports,
             "",
-        ]
+            *helper_block,
+            *class_body,
+            "",
+        ])
 
-        if custom_module_code.strip():
-            body.extend([custom_module_code.rstrip("\n"), ""])
+    @staticmethod
+    def generate_user_module_scaffold(
+            elements: List[DesignElement],
+            user_class_name: str = USER_CLASS_NAME,
+            designer_module_name: str = DESIGNER_MODULE_NAME,
+            designer_class_name: str = DESIGNER_CLASS_NAME,
+    ) -> str:
+        """The starter content for the user-owned module.
 
-        body.extend([
-            "class MainApplication:",
+        Called exactly once -- the first time a project needs a user
+        module and doesn't have one yet (see
+        CodeMixin._ensure_user_code_scaffold()). After that this function
+        is never called again for that project: the file it produced is
+        edited freely from then on and never regenerated, the same way a
+        WinForms Form1.cs is scaffolded once and then left alone.
+        """
+        lines = [
+            '"""',
+            f'{user_class_name} -- your code.',
+            '',
+            'This file is yours: the designer never overwrites it. It is only',
+            'scaffolded once, the first time this project gets its first',
+            'element. New event handler stubs are appended here automatically',
+            'when you add an element with an event, but only if a method of',
+            'that name does not already exist -- existing code is never',
+            'touched, and nothing is ever removed from this file automatically',
+            '(including when the element itself is later deleted).',
+            '"""',
+            "",
+            f"from {designer_module_name} import {designer_class_name}",
+            "",
+            "",
+            f"class {user_class_name}({designer_class_name}):",
             "    def __init__(self, root):",
             "        self.root = root",
-            f"        root.title({json.dumps(window_title)})",
-            f"        root.geometry({json.dumps(f'{int(round(float(window_size[0])))}x{int(round(float(window_size[1])))}')})",
-            f"        root.configure(bg={json.dumps(canvas_bg)})",
-        ])
+            "        self._build_ui()",
+        ]
 
-        window_state_lines = CodeGenerator._window_state_lines(
-            window_state, "        "
-        )
-        body.extend(window_state_lines)
-        body.extend([
+        for elem in elements:
+            event = DEFAULT_EVENT_MAP.get(elem.elem_type)
+            if not event:
+                continue
+            method_name = f"_on_{elem.elem_type}_{elem.elem_id}"
+            var_name = f"self._elem_{elem.elem_id}"
+            lines.append("")
+            lines.append(f"    def {method_name}(self, event=None):")
+            lines.extend(CodeGenerator._handler_stub_body(
+                elem.elem_type, elem.elem_id, event, var_name
+            ))
+
+        lines.extend([
             "",
-            '        label = tk.Label(',
-            f'            root, text="Add elements from the toolbox to begin!",',
-            f'            font=("Segoe UI", 10), bg={json.dumps(canvas_bg)}',
-            "        )",
-            "        label.place(x=10, y=10, width=300, height=30)",
-        ])
-
-        if class_methods:
-            body.append("")
-            body.extend(class_methods)
-
-        body.extend([
             "",
             "if __name__ == '__main__':",
+            "    import tkinter as tk",
             "    root = tk.Tk()",
-            "    app = MainApplication(root)",
+            f"    app = {user_class_name}(root)",
             "    root.mainloop()",
             "",
         ])
-        return "\n".join(body)
+        return "\n".join(lines)
+
 

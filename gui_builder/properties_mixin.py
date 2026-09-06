@@ -53,6 +53,57 @@ def _coerce_item_list(value):
 
 
 class PropertiesMixin:
+    def _bind_widget_help(self, widget, help_text):
+        """Bind Context Help hover text to a single Properties-pane widget.
+
+        Uses a direct (non-accumulating) tk bind() rather than the
+        add="+" pattern used for static UI chrome elsewhere in the app.
+        Properties-pane rows are heavily reused/rebuilt as the selection
+        changes -- the same tk.Entry/label instances are repeatedly
+        repurposed for different fields -- so a plain bind() (which
+        replaces any prior handler for that sequence on that widget)
+        keeps exactly one, always-current handler per widget instead of
+        letting handlers pile up call after call.
+        """
+        if widget is None:
+            return
+        widget.bind(
+            "<Enter>",
+            lambda e, w=widget, t=help_text: self._context_help_enter(w, t)
+        )
+        widget.bind(
+            "<Leave>",
+            lambda e, w=widget: self._context_help_leave(w)
+        )
+
+    def _apply_row_context_help(self, row, help_text):
+        """Attach the same Context Help text to a property row's label and
+        every control widget currently inside it (Entry/Combobox/buttons/
+        color-pickers/nested frames), so hovering anywhere on the row --
+        not just the label -- explains what the field does.
+
+        Must be called AFTER the row's controls are built for the current
+        field, since control_frame's children are destroyed and recreated
+        whenever the property panel refreshes (new selection, new field
+        assigned to this row slot, etc.).
+        """
+        if not help_text:
+            return
+        label = row.get("label")
+        if label is not None:
+            self._bind_widget_help(label, help_text)
+        control_frame = row.get("control_frame")
+        if control_frame is None:
+            return
+        stack = [control_frame]
+        while stack:
+            widget = stack.pop()
+            self._bind_widget_help(widget, help_text)
+            try:
+                stack.extend(widget.winfo_children())
+            except tk.TclError:
+                pass
+
     def _group_ids(self):
         ids = []
         for elem in self.elements:
@@ -254,6 +305,9 @@ class PropertiesMixin:
 
             row["frame"].pack(fill=tk.X, pady=2)
             row["visible"] = True
+            self._apply_row_context_help(
+                row, self._context_help_text_for("property", field_key)
+            )
             row_index += 1
 
 
@@ -406,6 +460,27 @@ class PropertiesMixin:
             text=f"{spec['display']} [id={elem.elem_id}]"
         )
         self.prop_context_var.set(self._parent_description(elem))
+        # Legacy MeasurementDisplay projects may contain separate *_font_size
+        # properties from older versions. Fold that size into the Font tuple
+        # on first inspection so the Font picker remains the single source of
+        # truth without exposing redundant fields.
+        if elem.elem_type == "MeasurementDisplay":
+            for font_key, size_key, fallback in (
+                ("label_font", "label_font_size", 9),
+                ("value_font", "value_font_size", 34),
+                ("unit_font", "unit_font_size", 12),
+                ("secondary_font", "secondary_font_size", 10),
+            ):
+                font_value = elem.props.get(font_key)
+                size_value = elem.props.get(size_key)
+                if size_value not in (None, "") and isinstance(font_value, (tuple, list)) and len(font_value) >= 2:
+                    try:
+                        size_int = max(1, int(float(size_value)))
+                        family = font_value[0]
+                        opts = tuple(font_value[2:])
+                        elem.props[font_key] = (family, size_int, *opts)
+                    except (TypeError, ValueError):
+                        pass
         fields = list(PROPERTY_FIELDS.get(elem.elem_type, []))
         fields.append(("group_id", "Group", "combobox"))
         row_index = 0
@@ -476,7 +551,7 @@ class PropertiesMixin:
             # and make up the large majority of property fields overall.
             is_special = (
                     (elem.elem_type == "Table" and field_key == "file") or
-                    (elem.elem_type == "Image" and field_key == "image_path") or
+                    (widget_type == "file_image" and field_key == "image_path") or
                     (field_key == "tabs" and elem.elem_type == "Notebook") or
                     (field_key in ("items", "values") and elem.elem_type in ("Listbox", "Combobox")) or
                     (field_key == "source_widget" and elem.elem_type == "LEDIndicator") or
@@ -505,6 +580,9 @@ class PropertiesMixin:
                     )
                 row["frame"].pack(fill=tk.X, pady=2)
                 row["visible"] = True
+                self._apply_row_context_help(
+                    row, self._context_help_text_for("property", field_key)
+                )
                 row_index += 1
                 continue
 
@@ -530,10 +608,13 @@ class PropertiesMixin:
                 ).pack(side=tk.LEFT, padx=(3, 0))
                 row["frame"].pack(fill=tk.X, pady=2)
                 row["visible"] = True
+                self._apply_row_context_help(
+                    row, self._context_help_text_for("property", field_key)
+                )
                 row_index += 1
                 continue
 
-            if elem.elem_type == "Image" and field_key == "image_path":
+            if widget_type == "file_image" and field_key == "image_path":
                 var.trace_add("write",
                               lambda *args, r=row: self._on_live_prop_change(
                                   r
@@ -552,6 +633,9 @@ class PropertiesMixin:
                 ).pack(side=tk.LEFT, padx=(3, 0))
                 row["frame"].pack(fill=tk.X, pady=2)
                 row["visible"] = True
+                self._apply_row_context_help(
+                    row, self._context_help_text_for("property", field_key)
+                )
                 row_index += 1
                 continue
 
@@ -744,6 +828,9 @@ class PropertiesMixin:
                 row["var"] = var
             row["frame"].pack(fill=tk.X, pady=2)
             row["visible"] = True
+            self._apply_row_context_help(
+                row, self._context_help_text_for("property", field_key)
+            )
             row_index += 1
 
     def _browse_table_file(self, var: tk.StringVar):
@@ -816,10 +903,9 @@ class PropertiesMixin:
         tabs = list(elem.props.get("tabs") or ["Tab 1"])
         tabs.append(f"Tab {len(tabs) + 1}")
         elem.props["tabs"] = tabs
-        self._invalidate_full_code()
         self.renderer.redraw_element(elem)
         self._show_properties(elem)
-        self._update_code()
+        self._regenerate_designer_code()
         self._save_state()
 
     def _remove_notebook_tab(self, elem: DesignElement):
@@ -835,10 +921,9 @@ class PropertiesMixin:
         elem.props["active_tab"] = min(
             int(elem.props.get("active_tab", 0) or 0), len(tabs) - 1
         )
-        self._invalidate_full_code()
         self.renderer.redraw_element(elem)
         self._show_properties(elem)
-        self._update_code()
+        self._regenerate_designer_code()
         self._save_state()
 
     def _show_canvas_properties(self):
@@ -857,6 +942,9 @@ class PropertiesMixin:
                          )
         row["frame"].pack(fill=tk.X, pady=2)
         row["visible"] = True
+        self._apply_row_context_help(
+            row, self._context_help_text_for("property", "window_title")
+        )
         row_index += 1
 
         row = self.prop_rows[row_index]
@@ -874,6 +962,9 @@ class PropertiesMixin:
                         )
         row["frame"].pack(fill=tk.X, pady=2)
         row["visible"] = True
+        self._apply_row_context_help(
+            row, self._context_help_text_for("property", "canvas_width")
+        )
         row_index += 1
 
         row = self.prop_rows[row_index]
@@ -891,6 +982,9 @@ class PropertiesMixin:
                         )
         row["frame"].pack(fill=tk.X, pady=2)
         row["visible"] = True
+        self._apply_row_context_help(
+            row, self._context_help_text_for("property", "canvas_height")
+        )
         row_index += 1
 
         row = self.prop_rows[row_index]
@@ -925,16 +1019,46 @@ class PropertiesMixin:
                          )
         row["frame"].pack(fill=tk.X, pady=2)
         row["visible"] = True
+        self._apply_row_context_help(
+            row, self._context_help_text_for("property", "canvas_background")
+        )
         row_index += 1
 
         row = self.prop_rows[row_index]
-        row["label"].configure(text="Window State:")
+        row["label"].configure(text="Background Image:")
+        self._clear_prop_row(row)
+        var_img=tk.StringVar(value=getattr(self,"CANVAS_BG_IMAGE",""))
+        f=tk.Frame(row["control_frame"],bg=self._panel_bg); f.pack(fill=tk.X)
+        tk.Entry(f,textvariable=var_img,width=16).pack(side=tk.LEFT,fill=tk.X,expand=True)
+        self._flat_button(f,"…",lambda v=var_img:self._browse_image_file(v)).pack(side=tk.LEFT,padx=(3,0))
+        var_img.trace_add("write",lambda *a:self._apply_canvas_image_props(var_img,None,None))
+        row["frame"].pack(fill=tk.X,pady=2); row["visible"]=True
+        self._apply_row_context_help(row, self._context_help_text_for("property", "canvas_bg_image"))
+        row_index+=1
+
+        row=self.prop_rows[row_index]; row["label"].configure(text="Image Mode:"); self._clear_prop_row(row)
+        var_mode=tk.StringVar(value=getattr(self,"CANVAS_BG_IMAGE_MODE","Fit"))
+        ttk.Combobox(row["control_frame"],textvariable=var_mode,values=["Stretch","Fill","Fit","Center","Tile","None"],state="readonly").pack(fill=tk.X)
+        var_mode.trace_add("write",lambda *a:self._apply_canvas_image_props(None,var_mode,None))
+        row["frame"].pack(fill=tk.X,pady=2); row["visible"]=True
+        self._apply_row_context_help(row, self._context_help_text_for("property", "canvas_bg_image_mode"))
+        row_index+=1
+
+        row=self.prop_rows[row_index]; row["label"].configure(text="Image Alignment:"); self._clear_prop_row(row)
+        var_anchor=tk.StringVar(value=getattr(self,"CANVAS_BG_IMAGE_ANCHOR","Center"))
+        ttk.Combobox(row["control_frame"],textvariable=var_anchor,values=["Top-Left","Top","Top-Right","Left","Center","Right","Bottom-Left","Bottom","Bottom-Right"],state="readonly").pack(fill=tk.X)
+        var_anchor.trace_add("write",lambda *a:self._apply_canvas_image_props(None,None,var_anchor))
+        row["frame"].pack(fill=tk.X,pady=2); row["visible"]=True
+        self._apply_row_context_help(row, self._context_help_text_for("property", "canvas_bg_image_anchor"))
+        row_index+=1
+
+        row=self.prop_rows[row_index]; row["label"].configure(text="Window State:")
         self._clear_prop_row(row)
         var_state = tk.StringVar(
             value=getattr(self, "WINDOW_STATE", "Normal")
             )
         ttk.Combobox(row["control_frame"], textvariable=var_state,
-                     values=["Normal", "Maximized", "Minimized"],
+                     values=["Normal", "Maximized", "Minimized", "Centered"],
                      width=22, state="readonly"
                      ).pack(fill=tk.X)
         var_state.trace_add(
@@ -943,6 +1067,9 @@ class PropertiesMixin:
             )
         row["frame"].pack(fill=tk.X, pady=2)
         row["visible"] = True
+        self._apply_row_context_help(
+            row, self._context_help_text_for("property", "window_state")
+        )
         row_index += 1
 
         row = self.prop_rows[row_index]
@@ -960,28 +1087,31 @@ class PropertiesMixin:
         )
         row["frame"].pack(fill=tk.X, pady=2)
         row["visible"] = True
+        self._apply_row_context_help(
+            row, self._context_help_text_for("property", "window_locked")
+        )
         row_index += 1
 
     def _apply_window_state_from_props(self, var_state):
         self.WINDOW_STATE = var_state.get()
-        # Unlike width/height/background, the window-state block is a
-        # multi-line conditional (see CodeGenerator._window_state_lines)
-        # that may not exist in the script yet, or may need switching
-        # between three different shapes -- regex-patching it in place
-        # in an already-generated self.full_code (the way
-        # _update_code_for_canvas_change patches geometry/bg) isn't worth
-        # the risk of corrupting the script. A full regenerate is cheap
-        # and this field changes rarely, so just do that instead.
-        self._invalidate_full_code()
-        self._update_code()
+        # Unlike the old single-file model, there's no risk calculus here
+        # anymore -- regenerating the designer module wholesale is always
+        # safe and cheap, window-state block or not.
+        self._regenerate_designer_code()
         self._schedule_save()
 
     def _apply_window_lock_from_props(self, var_locked):
         value = str(var_locked.get()).strip().lower()
         self.WINDOW_LOCKED = value in ("yes", "true", "1", "on")
-        self._invalidate_full_code()
-        self._update_code()
+        self._regenerate_designer_code()
         self._schedule_save()
+
+    def _apply_canvas_image_props(self,var_img,var_mode,var_anchor):
+        if var_img is not None: self.CANVAS_BG_IMAGE=var_img.get()
+        if var_mode is not None: self.CANVAS_BG_IMAGE_MODE=var_mode.get()
+        if var_anchor is not None: self.CANVAS_BG_IMAGE_ANCHOR=var_anchor.get()
+        self.renderer.draw_canvas_background(self.CANVAS_BG_IMAGE,self.CANVAS_BG_IMAGE_MODE,self.CANVAS_BG_IMAGE_ANCHOR,self.CANVAS_W,self.CANVAS_H)
+        self._regenerate_designer_code(); self._schedule_save()
 
     def _apply_canvas_size_from_props(self, var_w, var_h, var_bg):
         try:
@@ -992,32 +1122,21 @@ class PropertiesMixin:
             if var_bg:
                 self.CANVAS_BG = var_bg.get()
             self.canvas.config(width=self.CANVAS_W, height=self.CANVAS_H,
-                               bg=self.CANVAS_BG,
+                               bg=self._get_theme_colors()["panel_bg"],
                                scrollregion=(0, 0, self.CANVAS_W,
                                              self.CANVAS_H)
                                )
-            self.renderer.draw_grid(self.CANVAS_W, self.CANVAS_H)
-            self._update_code_for_canvas_change()
-            self._update_code()
+            self.renderer.draw_canvas_surface(self.CANVAS_W, self.CANVAS_H, self.CANVAS_BG)
+            self.renderer.draw_canvas_background(self.CANVAS_BG_IMAGE,self.CANVAS_BG_IMAGE_MODE,self.CANVAS_BG_IMAGE_ANCHOR,self.CANVAS_W,self.CANVAS_H)
+            if self._resnap_status_bars():
+                self._redraw_all_elements()
+            # No more geometry/bg regex patching -- a full designer-module
+            # regenerate is already the cheap, safe path for every change,
+            # canvas size included.
+            self._regenerate_designer_code()
             self._schedule_save()
         except ValueError:
             pass
-
-    def _update_code_for_canvas_change(self):
-        if self.full_code:
-            self.full_code = re.sub(
-                r'root\.geometry\([^\)]+\)',
-                f'root.geometry("{self.CANVAS_W}x{self.CANVAS_H}")',
-                self.full_code
-            )
-            self.full_code = re.sub(
-                r'root\.configure\(bg=[^\)]+\)',
-                f'root.configure(bg="{self.CANVAS_BG}")',
-                self.full_code
-            )
-        else:
-            self._invalidate_full_code()
-            self._update_code()
 
     def _build_item_collection_editor(self, row, elem: DesignElement, field_key: str, items: List[str]):
         """Build a dedicated dropdown editor for Listbox/Combobox collections.
@@ -1132,8 +1251,12 @@ class PropertiesMixin:
                 elem.canvas_h = round(float(value), 2)
             except (TypeError, ValueError):
                 pass
-        elif field_key == "font":
-            elem.props["font"] = _coerce_font_value(value)
+        elif field_key == "font" or (str(field_key).endswith("_font") and elem.elem_type == "MeasurementDisplay"):
+            # MeasurementDisplay uses four dedicated font properties.  They
+            # must follow the same tuple parsing path as the generic font
+            # property; otherwise the value is stored as a string and the
+            # renderer falls back to its default font.
+            elem.props[field_key] = _coerce_font_value(value)
         elif field_key in ("values", "items"):
             elem.props[field_key] = _coerce_item_list(value)
         elif field_key in ("target_widget", "source_widget") and elem.elem_type in ("Scrollbar", "LEDIndicator"):
@@ -1186,110 +1309,21 @@ class PropertiesMixin:
         self._schedule_save()
 
     def _update_code_for_element(self, elem: DesignElement):
-        def _safe_invalidate_and_update():
-            # Preserve existing custom handlers and class codes before clearing project state
-            existing_handlers = {e.elem_id: getattr(e, 'handler_code', 'pass') for e in self.elements}
-            existing_class_code = getattr(self, 'custom_class_code', '')
+        """Regenerate the designer module after a property edit to elem.
 
-            self._invalidate_full_code()
-
-            # Restore them immediately so the generator applies them instead of stubs
-            for e in self.elements:
-                if e.elem_id in existing_handlers:
-                    e.handler_code = existing_handlers[e.elem_id]
-            if existing_class_code:
-                self.custom_class_code = existing_class_code
-
-            self._update_code()
-
-        if not self.full_code:
-            _safe_invalidate_and_update()
-            return
-
-        # Relationship bindings and custom instrumentation widgets are emitted
-        # as shared generated code, so property edits must rebuild that block
-        # rather than attempting a local line splice.
-        instrumentation_types = {
-            "PushButton", "RadioButton", "LEDDigit", "LEDDisplay",
-            "LEDIndicator", "Gauge", "MeasurementDisplay",
-        }
-        if elem.elem_type in instrumentation_types:
-            _safe_invalidate_and_update()
-            return
-        if elem.elem_type == "Scrollbar" and "target_widget" in elem.props:
-            _safe_invalidate_and_update()
-            return
-
-        widget_line, place_line, extra_lines = CodeGenerator.generate_element_lines(
-            elem, self.elements
-        )
-
-        if elem.elem_type == "Image":
-            self._ensure_header_imports(
-                ["import os", "from PIL import Image, ImageTk"]
-                )
-        elif elem.elem_type == "Calendar":
-            self._ensure_header_imports(
-                ["from tkcalendar import Calendar", "from datetime import date"]
-                )
-
-        # Some widget types (an Image with a resolved image_path, which
-        # wraps Image.open()/ImageTk.PhotoImage() in a try/except) generate
-        # a multi-line widget_line where the actual "self._elem_N = ..."
-        # assignment is nested inside the try/except at a deeper indent
-        # than a single-line splice can safely locate and replace. Trying
-        # to regex-match it here would either silently fail every time
-        # (forcing a needless full regenerate on every edit) or, worse,
-        # match a partial/unexpected line and splice a fresh block into
-        # the middle of a stale one -- corrupting whatever element's code
-        # follows it (e.g. a button's handler method ends up looking like
-        # it reverted to "pass"). Route these straight to a clean full
-        # regenerate instead of attempting the line-level patch.
-        if "\n" in widget_line:
-            _safe_invalidate_and_update()
-            return
-
-        widget_pattern = rf'        self\._elem_{elem.elem_id} = .+'
-        place_pattern = rf'        self\._elem_{elem.elem_id}\.place\(.+'
-
-        lines = self.full_code.splitlines(keepends=True)
-        new_lines = []
-        widget_found = False
-        place_found = False
-        i = 0
-        while i < len(lines):
-            line = lines[i]
-            if not widget_found and re.match(widget_pattern, line):
-                widget_found = True
-                block_lines = []
-                block_start = i
-                while i < len(lines):
-                    current = lines[i]
-                    if re.match(place_pattern, current):
-                        block_lines.append(current)
-                        i += 1
-                        place_found = True
-                        break
-                    if re.match(r'        self\._elem_\d+ = ', current
-                                ) and current != lines[block_start]:
-                        break
-                    block_lines.append(current)
-                    i += 1
-                new_block = [widget_line]
-                if extra_lines:
-                    new_block.extend(extra_lines)
-                new_block.append(place_line)
-                new_lines.extend([l + '\n' for l in new_block])
-                continue
-            else:
-                new_lines.append(line)
-                i += 1
-
-        if not widget_found or not place_found:
-            _safe_invalidate_and_update()
-        else:
-            self.full_code = ''.join(new_lines)
-            self._current_code = self.full_code
+        This used to be ~100 lines: locate the element's block by regex,
+        bail to a full regenerate for instrumentation types / Scrollbar
+        targets / multi-line widgets (Image) / anything the pattern match
+        didn't find cleanly, and even the "safe" fallback closure had its
+        own gap -- it restored handler/class code from already-synced
+        model state rather than the live code editor buffer, so an
+        in-progress edit sitting in an open editor could be silently lost
+        if it fired mid-edit. None of that exists anymore: regenerating
+        the whole designer module is unconditionally safe (nothing
+        user-written can ever be in it), and user code lives only in
+        self.user_code, which this never touches at all.
+        """
+        self._regenerate_designer_code()
 
     def _pick_color(self, var: tk.StringVar):
         color = colorchooser.askcolor(initialcolor=var.get() or "#ffffff",

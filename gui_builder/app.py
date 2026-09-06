@@ -13,20 +13,15 @@ from .help_mixin import HelpMixin
 class GUIBuilderApp(ProjectMixin, CodeMixin, PropertiesMixin, CanvasMixin, HelpMixin, UIMixin):
         def __init__(self, root: tk.Tk):
             self.root = root
+            # Initialize theme before any UI construction
+            self.theme_name = DEFAULT_THEME
             self._setup_styles()
             self.window_title = "My Application"
             self.current_file_path: Optional[str] = None
             self._is_modified = False
-            self.full_code: Optional[str] = None
+            self.designer_code: Optional[str] = None
+            self.user_code: Optional[str] = None
             self._current_code: str = ""
-            # Custom code the user typed into the code editor outside any
-            # recognized boilerplate/handler region (constants, dicts, extra
-            # imports, standalone functions, extra class methods). Kept
-            # separately from self.full_code so a later full regenerate doesn't
-            # silently drop it -- see CodeGenerator.generate() and
-            # _extract_custom_regions().
-            self.custom_module_code: str = ""
-            self.custom_class_code: str = ""
 
             self._update_window_title_display()
             self.root.geometry("1400x800")
@@ -49,7 +44,10 @@ class GUIBuilderApp(ProjectMixin, CodeMixin, PropertiesMixin, CanvasMixin, HelpM
             self.CANVAS_W = 800
             self.CANVAS_H = 600
             self.CANVAS_BG = "#FFFFFF"
-            # Initial window state (Normal/Maximized/Minimized) for the
+            self.CANVAS_BG_IMAGE = ""
+            self.CANVAS_BG_IMAGE_MODE = "Fit"
+            self.CANVAS_BG_IMAGE_ANCHOR = "Center"
+            # Initial window state (Normal/Maximized/Minimized/Centered) for the
             # *exported* app's window -- unrelated to the builder's own
             # window, which is maximized a few lines up regardless of this.
             self.WINDOW_STATE = "Normal"
@@ -80,6 +78,7 @@ class GUIBuilderApp(ProjectMixin, CodeMixin, PropertiesMixin, CanvasMixin, HelpM
             self.code_visible = False
             self._code_display_timer = None
             self._code_editor_window = None
+            self._code_editor_text_widget = None
             self.prop_context_var = tk.StringVar(value="Container: None")
             self._tooltip_win = None
             self._toolbox_compact = False
@@ -91,14 +90,30 @@ class GUIBuilderApp(ProjectMixin, CodeMixin, PropertiesMixin, CanvasMixin, HelpM
             self.elem_origs = {}
             self.active_handle = None
             self.selection_box_id = None
+            self.canvas_handle_ids = {}
+            self.canvas_resize_orig = None
             self.selection_scope_id = None
             self.active_container_id = None
             self._last_move_delta = (0, 0)
             self._right_click_start = None
             self._next_group_id_hint = 1
+            # Cached alignment guides used during a move gesture.  Guides are
+            # prepared once at mouse-down so per-motion processing stays O(1)
+            # with respect to the number of canvas elements.
+            self._alignment_guides_x = []
+            self._alignment_guides_y = []
+            self._alignment_guide_ids = []
+            self._alignment_snap_state = {"x": None, "y": None}
+            self._alignment_rendered_guides = (None, None)
+            self._alignment_moving_bounds = None
+            self._alignment_snap_threshold = 6.0
+            self._alignment_release_threshold = 9.0
+            self._selection_drag_mode = "replace"
 
             self._build_ui()
-            self.renderer.draw_grid(self.CANVAS_W, self.CANVAS_H)
+            self.renderer.draw_canvas_surface(self.CANVAS_W, self.CANVAS_H, self.CANVAS_BG)
+            self.renderer.draw_canvas_background(self.CANVAS_BG_IMAGE,self.CANVAS_BG_IMAGE_MODE,self.CANVAS_BG_IMAGE_ANCHOR,self.CANVAS_W,self.CANVAS_H)
+            self.renderer.draw_canvas_border(self.CANVAS_W, self.CANVAS_H)
 
             self.root.bind("<Control-c>", self._copy_elements)
             self.root.bind("<Control-v>", self._paste_elements)
@@ -132,5 +147,6 @@ class GUIBuilderApp(ProjectMixin, CodeMixin, PropertiesMixin, CanvasMixin, HelpM
                 "Ready — pick a tool and click canvas, or double-click elements to edit code."
                 )
             self._show_properties(None)
+            self._draw_canvas_handles()
 
             self._save_state()

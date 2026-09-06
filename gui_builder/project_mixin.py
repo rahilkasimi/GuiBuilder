@@ -16,21 +16,6 @@ class ProjectMixin:
             self._save_timer = self.root.after(delay_ms, self._save_state)
 
         def _save_state(self, clear_redo=True):
-            # ``full_code`` may have been updated incrementally (for example
-            # when a new Image/Calendar/Table element is added).  Before the
-            # design snapshot is serialized, make the persistent import block
-            # agree with the actual generated source.  This prevents a later
-            # full regeneration from rebuilding the project from stale
-            # ``canvas_imports`` and silently dropping user-added imports.
-            try:
-                if getattr(self, "full_code", None):
-                    self._sync_project_imports_from_code(self.full_code)
-            except Exception:
-                # Saving the design itself must remain fail-safe; the code
-                # synchronization is a consistency repair, not a reason to
-                # block persistence of the user's canvas.
-                pass
-
             state = {
                 "elements": [e.to_dict() for e in self.elements],
                 "next_id": self.next_id,
@@ -39,12 +24,22 @@ class ProjectMixin:
                 "canvas_w": self.CANVAS_W,
                 "canvas_h": self.CANVAS_H,
                 "canvas_bg": self.CANVAS_BG,
+                "canvas_bg_image": getattr(self,"CANVAS_BG_IMAGE",""),
+                "canvas_bg_image_mode": getattr(self,"CANVAS_BG_IMAGE_MODE","Fit"),
+                "canvas_bg_image_anchor": getattr(self,"CANVAS_BG_IMAGE_ANCHOR","Center"),
                 "window_state": getattr(self, "WINDOW_STATE", "Normal"),
                 "window_locked": bool(getattr(self, "WINDOW_LOCKED", False)),
                 "canvas_imports": self.canvas_imports,
-                "full_code": self.full_code,
-                "custom_module_code": self.custom_module_code,
-                "custom_class_code": self.custom_class_code,
+                # designer_code is intentionally NOT persisted -- it's 100%
+                # derived from elements/window metadata and gets rebuilt by
+                # _regenerate_designer_code() on load, the same way it's
+                # rebuilt after every other model change. Persisting it
+                # would just be a second copy of the same information that
+                # could drift out of sync with the model it came from.
+                # user_code is the only piece of generated-code state that
+                # actually needs saving, because it's the one file nothing
+                # else can reconstruct.
+                "user_code": self.user_code,
             }
             state_str = json.dumps(state)
             if not self.undo_stack or self.undo_stack[-1] != state_str:
@@ -70,26 +65,17 @@ class ProjectMixin:
             self.CANVAS_W = data.get("canvas_w", 800)
             self.CANVAS_H = data.get("canvas_h", 600)
             self.CANVAS_BG = data.get("canvas_bg", "#FAFAFA")
+            self.CANVAS_BG_IMAGE = data.get("canvas_bg_image", "")
+            self.CANVAS_BG_IMAGE_MODE = data.get("canvas_bg_image_mode", "Fit")
+            self.CANVAS_BG_IMAGE_ANCHOR = data.get("canvas_bg_image_anchor", "Center")
             self.WINDOW_STATE = data.get("window_state", "Normal")
             self.WINDOW_LOCKED = bool(data.get("window_locked", False))
             self.canvas_imports = data.get("canvas_imports",
                                             "import tkinter as tk\nfrom tkinter import ttk")
-            self.full_code = data.get("full_code")
-            self.custom_module_code = data.get("custom_module_code", "")
-            self.custom_class_code = data.get("custom_class_code", "")
-
-            # Repair older designs that stored extra top-level imports only in
-            # ``full_code`` while ``canvas_imports`` contained just the base Tk
-            # imports.  The repair is non-destructive: it only adds imports that
-            # already exist in the saved source.
-            try:
-                if self.full_code:
-                    self._sync_project_imports_from_code(self.full_code)
-            except Exception:
-                pass
+            self.user_code = data.get("user_code")
 
             self.canvas.config(width=self.CANVAS_W, height=self.CANVAS_H,
-                                bg=self.CANVAS_BG,
+                                bg=self._get_theme_colors()["panel_bg"],
                                 scrollregion=(0, 0, self.CANVAS_W, self.CANVAS_H)
                                 )
 
@@ -98,10 +84,13 @@ class ProjectMixin:
                 self.elements.append(elem)
             self._rebuild_index()
 
-            self.renderer.draw_grid(self.CANVAS_W, self.CANVAS_H)
+            self.renderer.draw_canvas_surface(self.CANVAS_W, self.CANVAS_H, self.CANVAS_BG)
+            self.renderer.draw_canvas_background(self.CANVAS_BG_IMAGE,self.CANVAS_BG_IMAGE_MODE,self.CANVAS_BG_IMAGE_ANCHOR,self.CANVAS_W,self.CANVAS_H)
+            self.renderer.draw_canvas_border(self.CANVAS_W, self.CANVAS_H)
             self._redraw_all_elements()
             self._reorder_elements()
             self._show_properties(None)
+            self._regenerate_designer_code()
             self._update_code()
             self._update_element_count()
 
@@ -206,22 +195,28 @@ class ProjectMixin:
             self.CANVAS_W = 800
             self.CANVAS_H = 600
             self.CANVAS_BG = "#FAFAFA"
+            self.CANVAS_BG_IMAGE = ""
+            self.CANVAS_BG_IMAGE_MODE = "Fit"
+            self.CANVAS_BG_IMAGE_ANCHOR = "Center"
             self.WINDOW_STATE = "Normal"
             self.canvas_imports = "import tkinter as tk\nfrom tkinter import ttk"
-            # Custom code typed into the Code Editor (module-level helpers
-            # and extra class methods, kept outside the regenerated
-            # boilerplate -- see code_mixin.py) belongs to whatever design
-            # was open before. A new design starts from a blank slate, the
-            # same as a freshly launched builder, not with a previous
-            # project's hand-written functions still tagging along.
-            self.custom_module_code = ""
-            self.custom_class_code = ""
-            self.full_code = None
+            # user_code (event handlers, extra methods, extra imports typed
+            # into the code editor) belongs to whatever design was open
+            # before. A new design starts from a blank slate, the same as
+            # a freshly launched builder -- it gets its own scaffold
+            # generated fresh the first time it needs one (see
+            # _ensure_user_code_scaffold), not a previous project's
+            # hand-written functions tagging along.
+            self.user_code = None
+            self.designer_code = None
             self.undo_stack.clear()
             self.redo_stack.clear()
             self.canvas.delete("all")
-            self.renderer.draw_grid(self.CANVAS_W, self.CANVAS_H)
+            self.renderer.draw_canvas_surface(self.CANVAS_W, self.CANVAS_H, self.CANVAS_BG)
+            self.renderer.draw_canvas_background(self.CANVAS_BG_IMAGE,self.CANVAS_BG_IMAGE_MODE,self.CANVAS_BG_IMAGE_ANCHOR,self.CANVAS_W,self.CANVAS_H)
+            self.renderer.draw_canvas_border(self.CANVAS_W, self.CANVAS_H)
             self._show_properties(None)
+            self._regenerate_designer_code()
             self._update_code()
             self._update_element_count()
             self._save_state()

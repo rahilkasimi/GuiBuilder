@@ -1,5 +1,6 @@
 """Canvas interaction, hierarchy, selection and element operations."""
 from .dependencies import *
+from bisect import bisect_left
 from .config import *
 from .models import DesignElement
 
@@ -80,25 +81,79 @@ class CanvasMixin:
                 return self._by_id.get(active_id)
             return None
 
-        def _select_elements(self, elements: List[DesignElement], status_prefix: str) -> str:
-            """Replace the current selection with the supplied element list."""
+        def _select_elements(self, elements: List[DesignElement], status_prefix: str,
+                            mode: str = "replace") -> str:
+            """Apply a selection operation without changing group membership.
+
+            ``replace`` selects exactly ``elements``; ``add`` extends the
+            current selection; ``toggle`` adds unselected elements and removes
+            already-selected elements.  This is intentionally independent of
+            the persisted Group property: Shift/Ctrl operate on the current
+            selection, while groups remain a separate feature.
+            """
+            incoming = [e for e in elements if e in self.elements]
+            current = list(self.selected_elems)
+
+            if mode == "replace":
+                target = incoming
+            elif mode == "add":
+                target = current[:] 
+                for elem in incoming:
+                    if elem not in target:
+                        target.append(elem)
+            elif mode == "toggle":
+                target = current[:] 
+                for elem in incoming:
+                    if elem in target:
+                        target.remove(elem)
+                    else:
+                        target.append(elem)
+            else:
+                target = incoming
+
+            target_ids = {e.elem_id for e in target}
             for elem in self.selected_elems:
-                elem.selected = False
-                self.renderer.redraw_element(elem)
-            self.selected_elems.clear()
-            for elem in elements:
+                if elem.elem_id not in target_ids:
+                    elem.selected = False
+                    self.renderer.redraw_element(elem)
+            for elem in target:
+                was_selected = elem.selected
                 elem.selected = True
-                self.selected_elems.append(elem)
-                self.renderer.redraw_element(elem)
+                if not was_selected or mode != "replace":
+                    self.renderer.redraw_element(elem)
+
+            self.selected_elems[:] = target
             self._reorder_elements()
             if len(self.selected_elems) == 1:
                 self._show_properties(self.selected_elems[0])
+                self._update_position_status(self.selected_elems[0])
             elif self.selected_elems:
                 self._show_properties_multi()
             else:
                 self._show_properties(None)
             self._update_status(f"{status_prefix} {len(self.selected_elems)} element(s).")
             return "break"
+
+        @staticmethod
+        def _selection_modifiers(event):
+            """Return (shift, ctrl) using Tk's portable modifier bit masks."""
+            state = getattr(event, "state", 0)
+            return bool(state & 0x0001), bool(state & 0x0004)
+
+        def _selection_mode_from_event(self, event):
+            """Map canvas modifiers to independent selection semantics.
+
+            Shift = additive selection.
+            Ctrl  = toggle selection.
+            Ctrl+Shift = toggle selection (Ctrl takes precedence).
+            No modifier = normal single selection.
+            """
+            shift, ctrl = self._selection_modifiers(event)
+            if ctrl:
+                return "toggle"
+            if shift:
+                return "add"
+            return "replace"
 
         def _select_all(self, event=None):
             """Legacy Ctrl+A remains a root-level select-all operation.
@@ -169,12 +224,18 @@ class CanvasMixin:
 
             self._update_code_for_moved_elements()
             self._update_code()
+            self._update_position_status(self.selected_elems[0] if len(self.selected_elems)==1 else None)
 
             self._schedule_save()
 
         def _update_code_for_moved_elements(self):
-            for elem in self.selected_elems:
-                self._update_code_for_element(elem)
+            # Used to patch each moved element individually via
+            # PropertiesMixin._update_code_for_element. That per-element
+            # granularity doesn't buy anything anymore -- regenerating the
+            # whole designer module is already safe and cheap regardless
+            # of how many elements moved, so every caller of this just
+            # gets a single full regen now.
+            self._regenerate_designer_code()
 
         def _is_element_visible(self, elem: DesignElement) -> bool:
             current = elem
@@ -233,22 +294,65 @@ class CanvasMixin:
         def _visible_elements(self) -> List[DesignElement]:
             return [e for e in self.elements if self._is_element_visible(e)]
 
+        def _draw_canvas_handles(self):
+            """Draw subtle resize handles on the logical canvas boundary when no element is selected."""
+            for item in self.canvas_handle_ids.values():
+                try: self.canvas.delete(item)
+                except tk.TclError: pass
+            self.canvas_handle_ids = {}
+            if self.selected_elems: return
+            z=self._zoom or 1.0; x=0; y=0; w=self.CANVAS_W*z; h=self.CANVAS_H*z
+            pts={"NW":(x,y),"N":(x+w/2,y),"NE":(x+w,y),"E":(x+w,y+h/2),"SE":(x+w,y+h),"S":(x+w/2,y+h),"SW":(x,y+h),"W":(x,y+h/2)}
+            for name,(hx,hy) in pts.items():
+                r=4
+                self.canvas_handle_ids[name]=self.canvas.create_rectangle(hx-r,hy-r,hx+r,hy+r,fill="#FFFFFF",outline="#607D8B",width=1,tags=("canvas_handle",))
+            self.canvas.tag_raise("canvas_handle")
+
+        def _canvas_handle_at(self, x, y):
+            if self.selected_elems: return None
+            z=self._zoom or 1.0; pts={"NW":(0,0),"N":(self.CANVAS_W/2,0),"NE":(self.CANVAS_W,0),"E":(self.CANVAS_W,self.CANVAS_H/2),"SE":(self.CANVAS_W,self.CANVAS_H),"S":(self.CANVAS_W/2,self.CANVAS_H),"SW":(0,self.CANVAS_H),"W":(0,self.CANVAS_H/2)}
+            radius=10/max(z,0.01)
+            for name,(hx,hy) in pts.items():
+                if abs(x-hx)<=radius and abs(y-hy)<=radius: return name
+            return None
+
+        def _canvas_resize_preview(self, handle, dx, dy):
+            ox,oy=self.canvas_resize_orig
+            nw,nh=ox,oy
+            min_w,min_h=120,80
+            if "E" in handle: nw=ox+dx
+            if "S" in handle: nh=oy+dy
+            if "W" in handle: nw=ox-dx
+            if "N" in handle: nh=oy-dy
+            self.CANVAS_W=round(max(min_w,nw),2); self.CANVAS_H=round(max(min_h,nh),2)
+            self._resnap_status_bars()
+            self.canvas.config(scrollregion=(0,0,int(self.CANVAS_W*self._zoom),int(self.CANVAS_H*self._zoom)))
+            self.renderer.draw_canvas_surface(self.CANVAS_W,self.CANVAS_H,self.CANVAS_BG)
+            self.renderer.draw_canvas_background(self.CANVAS_BG_IMAGE,self.CANVAS_BG_IMAGE_MODE,self.CANVAS_BG_IMAGE_ANCHOR,self.CANVAS_W,self.CANVAS_H)
+            self.renderer.draw_canvas_border(self.CANVAS_W,self.CANVAS_H)
+            self._redraw_all_elements()
+            self._draw_canvas_handles()
+            self._show_canvas_properties()
+
         def _redraw_all_elements(self):
             for e in self.elements:
                 self.renderer.erase_element(e)
             for e in self._visible_elements():
                 self.renderer.draw_element(e)
             self._reorder_elements()
+            self._draw_canvas_handles()
 
         def _reorder_elements(self):
-            self.canvas.tag_lower("grid")
             visible = self._visible_elements()
             depths = self._compute_depths()
-            sorted_elems = sorted(visible,
-                                   key=lambda e: depths.get(e.elem_id, 0)
-                                   )
+            order_index = {e.elem_id: i for i, e in enumerate(self.elements)}
+            sorted_elems = sorted(
+                visible,
+                key=lambda e: (depths.get(e.elem_id, 0), order_index.get(e.elem_id, 0))
+            )
             for e in sorted_elems:
                 self.canvas.tag_raise(f"elem_{e.elem_id}")
+            self.canvas.tag_raise("canvas_border")
             self.canvas.tag_raise("handle")
 
         def _tool_selected(self, tool_name: str):
@@ -329,6 +433,33 @@ class CanvasMixin:
             z = self._zoom or 1.0
             return self.canvas.canvasx(event.x) / z, self.canvas.canvasy(event.y) / z
 
+        def _update_resize_cursor(self, x, y):
+            """Swap the canvas mouse cursor to match whichever resize
+            handle (element or whole-canvas) is under the pointer at
+            logical coordinates (x, y) -- a diagonal cursor over a
+            corner handle, a horizontal/vertical one over an edge
+            handle, the default arrow everywhere else. Only takes effect
+            while nothing is actively being dragged, so it doesn't fight
+            with the drag itself once a resize/move is underway.
+            """
+            if self.drag_mode not in ("none", None):
+                return
+            for elem in self.selected_elems:
+                hit = elem.hit_handle(x, y)
+                if hit and hit != "DEL":
+                    cursor = HANDLE_CURSOR_MAP.get(hit, "")
+                    if str(self.canvas.cget("cursor")) != cursor:
+                        self.canvas.config(cursor=cursor)
+                    return
+            canvas_handle = self._canvas_handle_at(x, y)
+            if canvas_handle:
+                cursor = HANDLE_CURSOR_MAP.get(canvas_handle, "")
+                if str(self.canvas.cget("cursor")) != cursor:
+                    self.canvas.config(cursor=cursor)
+                return
+            if str(self.canvas.cget("cursor")) != "":
+                self.canvas.config(cursor="")
+
         def _tag_drag_group(self):
             """Tag every canvas item belonging to the currently selected
             elements (plus any children cascaded along with a container) with
@@ -361,9 +492,17 @@ class CanvasMixin:
         def _on_canvas_click(self, event):
             x, y = self._logical_xy(event)
             z = self._zoom or 1.0
-            ctrl_held = (event.state & 0x0004) != 0 or (event.state & 0x0001) != 0
+            selection_mode = self._selection_mode_from_event(event)
             context_container = self._selection_container_for_point(x, y)
             self.active_container_id = context_container.elem_id if context_container else None
+
+            canvas_handle = self._canvas_handle_at(x, y)
+            if canvas_handle:
+                self.drag_mode = "canvas_resize"
+                self.active_handle = canvas_handle
+                self.mouse_down_pos = (x, y)
+                self.canvas_resize_orig = (self.CANVAS_W, self.CANVAS_H)
+                return
 
             if self.pending_type:
                 tool = self.pending_type
@@ -409,30 +548,42 @@ class CanvasMixin:
 
             clicked = self._find_element_at(x, y)
             if clicked:
-                # Clicking any element that's already part of the current
-                # multi-selection keeps the whole group selected as-is --
-                # Ctrl/Shift is only needed to *build* a multi-selection
-                # (add/remove elements from it), not to move one that
-                # already exists. Without this, a plain click on one of
-                # several selected elements would collapse the selection
-                # down to just that element before the drag even starts,
-                # so only it would move instead of the whole group.
-                already_in_group = (
-                        clicked in self.selected_elems
-                        and len(self.selected_elems) > 1
-                )
+                # A plain click on an already-selected item keeps the current
+                # multi-selection intact so the entire selection can be moved.
+                # Shift adds only the clicked element. Ctrl toggles only the
+                # clicked element. Neither modifier expands a persisted group.
+                already_in_group = (clicked in self.selected_elems
+                                    and len(self.selected_elems) > 1
+                                    and selection_mode == "replace")
                 if not already_in_group:
-                    group_members = self._group_members(clicked) if not ctrl_held else [clicked]
-                    self._select_elements(group_members if len(group_members) > 1 else [clicked], "Selected group" if len(group_members) > 1 else "Selected")
+                    if selection_mode == "replace":
+                        group_members = self._group_members(clicked)
+                        chosen = group_members if len(group_members) > 1 else [clicked]
+                        status = "Selected group" if len(group_members) > 1 else "Selected"
+                    else:
+                        chosen = [clicked]
+                        status = "Added to selection" if selection_mode == "add" else "Toggled selection"
+                    self._select_elements(chosen, status, mode=selection_mode)
+
+                    # Ctrl-click removes an item from the selection.  That is a
+                    # selection-only gesture, not the beginning of a move.
+                    if selection_mode == "toggle" and clicked not in self.selected_elems:
+                        self._reset_drag_state()
+                        return
+
                 self.drag_mode = "move"
                 self.drag_elem = clicked
                 self.mouse_down_pos = (x, y)
                 self.active_handle = None
                 self._last_move_delta = (0, 0)
+                self._prepare_alignment_guides()
                 self._tag_drag_group()
             else:
-                self._select_element(None, clear=not ctrl_held)
-                self._reset_drag_state()
+                # Defer selection changes until marquee release. This allows
+                # Shift/Ctrl to define the marquee operation without repeatedly
+                # rebuilding the inspector while the mouse is pressed.
+                self._selection_drag_mode = selection_mode
+                self._reset_drag_state(keep_selection_drag=True)
                 self.drag_mode = "select_box"
                 # Preserve the established left-button behavior: the normal
                 # marquee selects across the whole visible canvas. Scoped
@@ -525,6 +676,10 @@ class CanvasMixin:
             mx, my = self._logical_xy(event)
             cum_dx, cum_dy = mx - self.mouse_down_pos[0], my - self.mouse_down_pos[1]
 
+            if self.drag_mode == "canvas_resize":
+                self._canvas_resize_preview(self.active_handle, cum_dx, cum_dy)
+                return
+
             if self.drag_mode == "move":
                 # Snap once, using the element the user actually grabbed as the
                 # anchor, then apply that exact same delta to every selected
@@ -542,9 +697,11 @@ class CanvasMixin:
                     return
                 aox, aoy, _, _ = self.elem_origs[anchor.elem_id]
                 snapped_x, snapped_y = self.renderer.snap_to_grid(aox + cum_dx,
-                                                                   aoy + cum_dy
-                                                                   )
+                                                                   aoy + cum_dy)
                 dx, dy = snapped_x - aox, snapped_y - aoy
+                dx, snap_x_guide = self._alignment_snap_delta(dx, axis="x")
+                dy, snap_y_guide = self._alignment_snap_delta(dy, axis="y")
+                self._update_alignment_guides(snap_x_guide, snap_y_guide)
 
                 # Incremental delta since the previous drag frame. Canvas items
                 # are translated by this amount, not by the full cumulative
@@ -691,13 +848,24 @@ class CanvasMixin:
                 x2, y2 = max(self.mouse_down_pos[0], mx), max(
                     self.mouse_down_pos[1], my
                     )
+                matches = []
                 for elem in self._visible_elements():
-                    cx, cy = elem.x + elem.canvas_w // 2, elem.y + elem.canvas_h // 2
-                    if x1 <= cx <= x2 and y1 <= cy <= y2 and elem not in self.selected_elems:
-                        self._select_element(elem, clear=False)
+                    cx, cy = elem.x + elem.canvas_w / 2, elem.y + elem.canvas_h / 2
+                    if x1 <= cx <= x2 and y1 <= cy <= y2:
+                        matches.append(elem)
+                mode = getattr(self, "_selection_drag_mode", "replace")
+                self._select_elements(matches, "Marquee selection", mode=mode)
                 if self.selection_box_id:
                     self.canvas.delete(self.selection_box_id)
                     self.selection_box_id = None
+
+            elif self.drag_mode == "canvas_resize":
+                self.renderer.draw_canvas_surface(self.CANVAS_W, self.CANVAS_H, self.CANVAS_BG)
+                self.renderer.draw_canvas_background(self.CANVAS_BG_IMAGE, self.CANVAS_BG_IMAGE_MODE, self.CANVAS_BG_IMAGE_ANCHOR, self.CANVAS_W, self.CANVAS_H)
+                self.renderer.draw_canvas_border(self.CANVAS_W, self.CANVAS_H)
+                self._redraw_all_elements()
+                self._update_code()
+                self._schedule_save()
 
             elif self.drag_mode in ("move", "resize"):
                 if self.drag_mode == "move":
@@ -733,14 +901,17 @@ class CanvasMixin:
                 self._update_code_for_moved_elements()
                 self._update_code()
                 self._reorder_elements()
+                self._update_position_status(self.selected_elems[0] if len(self.selected_elems)==1 else None)
                 self._save_state()
 
             self._reset_drag_state()
 
-            # If any parent changed, regenerate full code to fix ordering
-            if parent_changed:
-                self._invalidate_full_code()
-                self._update_code()
+            # If any parent changed, the widget-creation order in the
+            # designer module needs to reflect the new nesting -- already
+            # covered by the unconditional _regenerate_designer_code()
+            # call above, so there's nothing extra to do here now (this
+            # used to invalidate + fully regenerate a second time on top
+            # of an already-applied per-element patch).
 
         def _on_canvas_double_click(self, event):
             x, y = self._logical_xy(event)
@@ -766,16 +937,151 @@ class CanvasMixin:
             nh = min(nh, self.CANVAS_H - ny)
             return nx, ny, nw, nh
 
-        def _reset_drag_state(self):
+        def _clear_alignment_guides(self, reset_snap=True):
+            for item in getattr(self, "_alignment_guide_ids", []):
+                try:
+                    self.canvas.delete(item)
+                except tk.TclError:
+                    pass
+            self._alignment_guide_ids = []
+            self._alignment_rendered_guides = (None, None)
+            if reset_snap:
+                self._alignment_snap_state = {"x": None, "y": None}
+
+        def _prepare_alignment_guides(self):
+            """Cache candidate alignment axes once at move start."""
+            selected_ids = {e.elem_id for e in self.selected_elems}
+            xs, ys = set(), set()
+            for elem in self._visible_elements():
+                if elem.elem_id in selected_ids:
+                    continue
+                x, y = float(elem.x), float(elem.y)
+                w, h = float(elem.canvas_w), float(elem.canvas_h)
+                xs.update((x, x + w / 2.0, x + w))
+                ys.update((y, y + h / 2.0, y + h))
+            self._alignment_guides_x = tuple(sorted(xs))
+            self._alignment_guides_y = tuple(sorted(ys))
+            self._alignment_moving_bounds = self._moving_bounds()
+            self._clear_alignment_guides()
+
+        def _moving_bounds(self):
+            moving = [self.elem_origs[e.elem_id] for e in self.selected_elems
+                      if e.elem_id in self.elem_origs]
+            if not moving:
+                return None
+            return (min(v[0] for v in moving),
+                    min(v[1] for v in moving),
+                    max(v[0] + v[2] for v in moving),
+                    max(v[1] + v[3] for v in moving))
+
+        def _alignment_snap_delta(self, base_delta, axis="x"):
+            """Return an adjusted delta and active guide identity."""
+            bounds = getattr(self, "_alignment_moving_bounds", None)
+            if not bounds:
+                return base_delta, None
+            if axis == "x":
+                lo, hi = bounds[0], bounds[2]
+                current = (lo + base_delta, (lo + hi) / 2.0 + base_delta, hi + base_delta)
+                guides = self._alignment_guides_x
+            else:
+                lo, hi = bounds[1], bounds[3]
+                current = (lo + base_delta, (lo + hi) / 2.0 + base_delta, hi + base_delta)
+                guides = self._alignment_guides_y
+
+            state_key = axis
+            active = self._alignment_snap_state.get(state_key)
+            threshold = (self._alignment_release_threshold
+                         if active is not None else self._alignment_snap_threshold)
+
+            if active is not None:
+                guide, idx = active
+                diff = guide - current[idx]
+                if abs(diff) <= threshold:
+                    return base_delta + diff, active
+                self._alignment_snap_state[state_key] = None
+
+            if not guides:
+                return base_delta, None
+
+            best = None
+            best_abs = threshold
+            for idx, pos in enumerate(current):
+                insert_at = bisect_left(guides, pos)
+                for guide_index in (insert_at - 1, insert_at):
+                    if 0 <= guide_index < len(guides):
+                        guide = guides[guide_index]
+                        diff = guide - pos
+                        ad = abs(diff)
+                        if ad <= best_abs:
+                            best_abs = ad
+                            best = (guide, idx, diff)
+            if best is None:
+                return base_delta, None
+
+            active = (best[0], best[1])
+            self._alignment_snap_state[state_key] = active
+            return base_delta + best[2], active
+
+        def _update_alignment_guides(self, x_guide, y_guide):
+            """Update guide lines only when the snapped axes change."""
+            desired = (x_guide, y_guide)
+            if desired == getattr(self, "_alignment_rendered_guides", (None, None)):
+                return
+            self._clear_alignment_guides(reset_snap=False)
+            self._alignment_rendered_guides = desired
+            z = self._zoom or 1.0
+            if x_guide is not None:
+                x = x_guide[0] * z
+                self._alignment_guide_ids.append(
+                    self.canvas.create_line(
+                        x, 0, x, self.CANVAS_H * z,
+                        fill="#607D8B", dash=(4, 4), width=1,
+                        tags=("alignment_guide",)
+                    )
+                )
+            if y_guide is not None:
+                y = y_guide[0] * z
+                self._alignment_guide_ids.append(
+                    self.canvas.create_line(
+                        0, y, self.CANVAS_W * z, y,
+                        fill="#607D8B", dash=(4, 4), width=1,
+                        tags=("alignment_guide",)
+                    )
+                )
+            # Keep guides above the canvas surface/background but below widgets.
+            try:
+                self.canvas.tag_raise("alignment_guide", "canvas_surface")
+                if self.canvas.find_withtag("canvas_background"):
+                    self.canvas.tag_raise("alignment_guide", "canvas_background")
+            except tk.TclError:
+                self.canvas.tag_lower("alignment_guide")
+
+        def _reset_drag_state(self, keep_selection_drag=False):
+            self._clear_alignment_guides()
             self.drag_mode, self.drag_elem, self.mouse_down_pos, self.elem_origs, self.active_handle = "none", None, None, {}, None
             self._last_move_delta = (0, 0)
+            self._alignment_moving_bounds = None
             self.canvas.dtag("dragging", "dragging")
+            if not keep_selection_drag:
+                self._selection_drag_mode = "replace"
+            self._draw_canvas_handles()
 
         def _add_element(self, elem_type: str, x: int, y: int):
             sx, sy = self.renderer.snap_to_grid(int(x), int(y))
             w, h = ELEMENT_TYPES[elem_type]["default_size"]
-            sx = max(0, min(sx, self.CANVAS_W - w))
-            sy = max(0, min(sy, self.CANVAS_H - h))
+
+            if elem_type == "StatusBar":
+                # A status bar is docked, not freely placed: it always
+                # spans the full canvas width and hugs the bottom edge,
+                # regardless of where on the canvas the user clicked to
+                # place it. It also never nests inside a container -- it's
+                # always a root-level, window-wide element.
+                w = self.CANVAS_W
+                sx = 0
+                sy = max(0, self.CANVAS_H - h)
+            else:
+                sx = max(0, min(sx, self.CANVAS_W - w))
+                sy = max(0, min(sy, self.CANVAS_H - h))
 
             if self.reusable_ids:
                 new_id = min(self.reusable_ids)
@@ -789,7 +1095,8 @@ class CanvasMixin:
                                   props=props, elem_id=new_id, canvas_w=w,
                                   canvas_h=h
                                   )
-            parent = self._container_at(sx + w / 2, sy + h / 2)
+            parent = (None if elem_type == "StatusBar"
+                      else self._container_at(sx + w / 2, sy + h / 2))
             if parent is not None:
                 elem.parent_id = parent.elem_id
                 if parent.elem_type == "Notebook":
@@ -797,19 +1104,16 @@ class CanvasMixin:
                         parent.props.get("active_tab", 0) or 0
                         )
 
-            event_name = DEFAULT_EVENT_MAP.get(elem_type)
-            if event_name:
-                code = f'"""\nEvent handler for {elem_type} (ID: {elem.elem_id}).\nTriggered by: {event_name}\nAccess widget instance via: self._elem_{elem.elem_id}\n"""\npass'
-                elem.handler_code = code
-
             self.elements.append(elem)
             self._rebuild_index()
 
-            if self.full_code is None:
-                self._regenerate_full_code()
-            else:
-                if not self._insert_code_for_new_elements([elem]):
-                    self._regenerate_full_code()
+            # No more "try the cheap patch, fall back to full regen"
+            # dance -- regenerating the whole designer module is always
+            # safe and already cheap. The handler stub (if this element
+            # type has a default event) goes into main_app.py, the one
+            # file that's never regenerated wholesale.
+            self._regenerate_designer_code()
+            self._ensure_handler_stub(elem)
 
             if self._is_element_visible(elem):
                 self.renderer.draw_element(elem)
@@ -821,6 +1125,46 @@ class CanvasMixin:
             self._update_element_count()
             self._update_status(f"Added {ELEMENT_TYPES[elem_type]['display']}.")
             self._save_state()
+
+        def _resnap_status_bars(self) -> bool:
+            """Keep every root-level StatusBar element docked to the
+            bottom edge, full canvas width, whenever the canvas itself is
+            resized -- whether that's a numeric edit in Canvas Settings
+            (_apply_canvas_size_from_props) or a live drag of the canvas's
+            own resize handle (_canvas_resize_preview, called on every
+            mouse-move during that drag). Placement at first-add time is
+            handled directly in _add_element().
+
+            Only updates the model (x/y/canvas_w) and returns whether
+            anything changed -- it deliberately does NOT redraw anything
+            itself, since both callers already redraw afterward (one via
+            a full _redraw_all_elements() pass on every drag step, the
+            other via an explicit redraw below) and redrawing here too
+            would just double the work on every mouse-move.
+            """
+            changed = False
+            for elem in self.elements:
+                if elem.elem_type != "StatusBar" or elem.parent_id is not None:
+                    continue
+                new_x, new_w = 0, self.CANVAS_W
+                new_y = max(0, self.CANVAS_H - elem.canvas_h)
+                if (elem.x, elem.y, elem.canvas_w) != (new_x, new_y, new_w):
+                    elem.x, elem.y, elem.canvas_w = new_x, new_y, new_w
+                    changed = True
+            if changed:
+                self._rebuild_index()
+            return changed
+
+        def _update_position_status(self, elem=None):
+            if elem is None:
+                self.position_var.set("Canvas: --, --    Size: -- × --")
+                return
+            parent=self._by_id.get(elem.parent_id) if elem.parent_id is not None else None
+            if parent is None:
+                self.position_var.set(f"Canvas: X {elem.x:.2f}, Y {elem.y:.2f}    Size: {elem.canvas_w:.2f} × {elem.canvas_h:.2f}")
+            else:
+                rx=elem.x-parent.x; ry=elem.y-parent.y
+                self.position_var.set(f"Container: X {rx:.2f}, Y {ry:.2f}    Canvas: X {elem.x:.2f}, Y {elem.y:.2f}    Size: {elem.canvas_w:.2f} × {elem.canvas_h:.2f}")
 
         def _select_element(
                 self, elem: Optional[DesignElement], clear: bool = True
@@ -844,6 +1188,33 @@ class CanvasMixin:
                 self._show_properties_multi()
             else:
                 self._show_properties(None)
+                self._update_position_status(None)
+
+        def _align_selected(self, mode):
+            elems=[e for e in self.selected_elems if e in self.elements]
+            if not elems: return
+            if len(elems)==1:
+                e=elems[0]
+                if e.parent_id is not None and e.parent_id in self._by_id:
+                    p=self._by_id[e.parent_id]; px,py,pw,ph=p.x,p.y,p.canvas_w,p.canvas_h
+                else: px,py,pw,ph=0,0,self.CANVAS_W,self.CANVAS_H
+                if mode=='left': e.x=px
+                elif mode=='center_h': e.x=px+(pw-e.canvas_w)/2
+                elif mode=='right': e.x=px+pw-e.canvas_w
+                elif mode=='top': e.y=py
+                elif mode=='center_v': e.y=py+(ph-e.canvas_h)/2
+                elif mode=='bottom': e.y=py+ph-e.canvas_h
+            else:
+                l=min(e.x for e in elems); t=min(e.y for e in elems); r=max(e.x+e.canvas_w for e in elems); b=max(e.y+e.canvas_h for e in elems)
+                for e in elems:
+                    if mode=='left': e.x=l
+                    elif mode=='center_h': e.x=(l+r-e.canvas_w)/2
+                    elif mode=='right': e.x=r-e.canvas_w
+                    elif mode=='top': e.y=t
+                    elif mode=='center_v': e.y=(t+b-e.canvas_h)/2
+                    elif mode=='bottom': e.y=b-e.canvas_h
+            for e in elems: e.x=round(max(0,min(self.CANVAS_W-e.canvas_w,e.x)),2); e.y=round(max(0,min(self.CANVAS_H-e.canvas_h,e.y)),2)
+            self._redraw_all_elements(); self._update_code(); self._schedule_save()
 
         def _show_canvas_context_menu(self, event):
             x, y = self._logical_xy(event)
@@ -882,6 +1253,11 @@ class CanvasMixin:
                 visible = str(target.props.get("visible", "yes")).strip().lower() not in ("no", "0", "false")
                 menu.add_command(label="Hide" if visible else "Show", command=lambda: self._context_toggle_visible(target))
 
+            align_menu=tk.Menu(menu,tearoff=0)
+            for label,mode in (("Left","left"),("Center Horizontally","center_h"),("Right","right"),("Top","top"),("Center Vertically","center_v"),("Bottom","bottom")):
+                align_menu.add_command(label=label,command=lambda m=mode:self._align_selected(m),state=(tk.NORMAL if elems else tk.DISABLED))
+            menu.add_cascade(label="Align",menu=align_menu,state=(tk.NORMAL if elems else tk.DISABLED))
+            menu.add_separator()
             menu.add_command(label="Copy", command=self._copy_elements, state=(tk.NORMAL if elems else tk.DISABLED))
             menu.add_command(label="Paste", command=self._paste_elements, state=(tk.NORMAL if self.clipboard else tk.DISABLED))
             menu.add_command(label="Delete", command=self._delete_selected, state=(tk.NORMAL if elems else tk.DISABLED))
@@ -983,7 +1359,7 @@ class CanvasMixin:
                 return
             if not self.selected_elems:
                 return "break"
-            self.clipboard = [copy.deepcopy(e) for e in self.selected_elems]
+            self.clipboard = [e.clone_persistent() for e in self.selected_elems]
             self._update_status(
                 f"Copied {len(self.clipboard)} element(s) to clipboard."
                 )
@@ -1001,7 +1377,7 @@ class CanvasMixin:
             pasted_id_map = {}
             pasted_group_map = {}
             for data in self.clipboard:
-                new_elem = copy.deepcopy(data)
+                new_elem = data.clone_persistent()
                 old_elem_id = new_elem.elem_id
                 if self.reusable_ids:
                     new_elem.elem_id = min(self.reusable_ids)
@@ -1045,11 +1421,9 @@ class CanvasMixin:
                 if self._is_element_visible(new_elem):
                     self.renderer.draw_element(new_elem)
 
-            if self.full_code is None:
-                self._regenerate_full_code()
-            else:
-                if not self._insert_code_for_new_elements(pasted):
-                    self._regenerate_full_code()
+            self._regenerate_designer_code()
+            for e in pasted:
+                self._ensure_handler_stub(e)
 
             for e in pasted:
                 if self._is_element_visible(e):
@@ -1084,34 +1458,16 @@ class CanvasMixin:
                             to_delete.append(child)
 
             deleted_ids = {e.elem_id for e in to_delete}
-            special_runtime_types = {
-                "Scrollbar", "PushButton", "RadioButton", "LEDDigit",
-                "LEDDisplay", "LEDIndicator", "Gauge", "MeasurementDisplay",
-            }
-            removed_scroll_relation = any(
-                e.elem_type in ("Scrollbar", "Text", "Canvas") or
-                e.elem_type in special_runtime_types
-                for e in to_delete
-            )
-            # An LED Indicator may be bound to a control that remains on the
-            # canvas; removing either endpoint must regenerate the shared
-            # binding block rather than leave a stale reference in full_code.
-            removed_scroll_relation = removed_scroll_relation or any(
-                e.elem_type == "LEDIndicator" and str(e.props.get("source_widget", "")).strip()
-                for e in to_delete
-            )
             deleted_id_strings = {str(v) for v in deleted_ids}
             for remaining in self.elements:
                 if (remaining.elem_type == "Scrollbar" and
                         str(remaining.props.get("target_widget", "")).strip()
                         in deleted_id_strings):
                     remaining.props["target_widget"] = ""
-                    removed_scroll_relation = True
                 if (remaining.elem_type == "LEDIndicator" and
                         str(remaining.props.get("source_widget", "")).strip()
                         in deleted_id_strings):
                     remaining.props["source_widget"] = ""
-                    removed_scroll_relation = True
 
             for elem in to_delete:
                 self.renderer.erase_element(elem)
@@ -1120,17 +1476,16 @@ class CanvasMixin:
                     self.reusable_ids.add(elem.elem_id)
             self._rebuild_index()
 
-            if removed_scroll_relation:
-                # Scrollbar bindings live in a shared post-widget block, so
-                # deleting or invalidating one endpoint requires regeneration
-                # rather than the ordinary single-element removal splice.
-                self._invalidate_full_code()
-                self._regenerate_full_code()
-            elif self.full_code is not None:
-                if not self._remove_code_for_elements(to_delete):
-                    self._regenerate_full_code()
-            else:
-                self._regenerate_full_code()
+            # A single unconditional regenerate replaces the old
+            # special_runtime_types / removed_scroll_relation dance --
+            # there's no cheaper splice path left to fall back FROM.
+            # Deliberately does not touch self.user_code: any handler
+            # method belonging to a deleted element is left in place,
+            # orphaned, exactly as a WinForms designer leaves an unused
+            # event handler in code-behind after you delete the control
+            # that used to raise it, rather than risk deleting something
+            # the user had since added to that method's body.
+            self._regenerate_designer_code()
 
             self.selected_elems.clear()
             self._reset_drag_state()
@@ -1148,7 +1503,6 @@ class CanvasMixin:
                                         ):
                 return
 
-            self._invalidate_full_code()
             for elem in self.elements:
                 self.renderer.erase_element(elem)
             self.elements.clear()
@@ -1159,8 +1513,10 @@ class CanvasMixin:
 
             self._reset_drag_state()
             self.canvas.delete("all")
-            self.renderer.draw_grid(self.CANVAS_W, self.CANVAS_H)
+            self.renderer.draw_canvas_background(self.CANVAS_BG_IMAGE, self.CANVAS_BG_IMAGE_MODE, self.CANVAS_BG_IMAGE_ANCHOR, self.CANVAS_W, self.CANVAS_H)
+            self.renderer.draw_canvas_border(self.CANVAS_W, self.CANVAS_H)
             self._show_properties(None)
+            self._regenerate_designer_code()
             self._update_code()
             self._update_element_count()
             self._save_state()

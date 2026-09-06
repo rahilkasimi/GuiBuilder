@@ -1,5 +1,6 @@
 """Domain model for a design element."""
 from .dependencies import *
+import copy
 from .config import *
 
 @dataclass
@@ -15,7 +16,10 @@ class DesignElement:
     rect_id: int = 0
     text_id: int = 0
     handle_ids: Dict[str, int] = field(default_factory=dict)
-    handler_code: str = ""
+    # handler_code was removed: event-handler bodies now live exclusively
+    # in the user-owned module (main_app.py), never duplicated onto the
+    # element model. See CodeMixin._ensure_handler_stub() /
+    # CodeGenerator.generate_user_module_scaffold().
     parent_id: Optional[int] = None
     parent_tab: Optional[int] = None
     _image_tk: Any = None
@@ -24,6 +28,36 @@ class DesignElement:
     # redraw (drag, resize, unrelated property edits) and only reload it
     # when the Image element's file or on-canvas size actually changed.
     _image_cache_key: Any = None
+    _image_bg_cache: Any = None
+
+    def __deepcopy__(self, memo):
+        """Copy only persistent design state. Runtime Tk objects and image
+        caches are intentionally excluded from clipboard/undo copies."""
+        result = DesignElement(
+            elem_type=self.elem_type,
+            x=self.x, y=self.y,
+            props=copy.deepcopy(self.props, memo),
+            elem_id=self.elem_id,
+            selected=self.selected,
+            canvas_w=self.canvas_w, canvas_h=self.canvas_h,
+            parent_id=self.parent_id, parent_tab=self.parent_tab,
+        )
+        result.rect_id = 0
+        result.text_id = 0
+        result.handle_ids = {}
+        result._image_tk = None
+        result._image_cache_key = None
+        result._image_bg_cache = None
+        return result
+
+    def clone_persistent(self):
+        """Return a clipboard-safe copy containing only project state."""
+        return DesignElement(
+            elem_type=self.elem_type, x=self.x, y=self.y,
+            props=copy.deepcopy(self.props), elem_id=self.elem_id,
+            selected=self.selected, canvas_w=self.canvas_w, canvas_h=self.canvas_h,
+            parent_id=self.parent_id, parent_tab=self.parent_tab,
+        )
 
     def __post_init__(self):
         if self.canvas_w == 0:
@@ -32,6 +66,16 @@ class DesignElement:
             self.canvas_h = ELEMENT_TYPES[self.elem_type]["default_size"][1]
         self.canvas_w = round(float(self.canvas_w), 2)
         self.canvas_h = round(float(self.canvas_h), 2)
+
+        # Lightweight, predictable defaults for the shared image/content styling.
+        # Existing project values are preserved; only missing values are filled.
+        self.props.setdefault("image_path", "")
+        self.props.setdefault("image_mode", "Fit")
+        self.props.setdefault("image_anchor", "Center")
+        if self.elem_type in {"Label", "Button", "Checkbutton", "Radiobutton"}:
+            self.props.setdefault("content_anchor", "center")
+            self.props.setdefault("compound", "none")
+
         if self.elem_type == "Notebook":
             tabs = self.props.get("tabs")
             if not isinstance(tabs, list) or not tabs:
@@ -93,7 +137,6 @@ class DesignElement:
             "canvas_w": self.canvas_w,
             "canvas_h": self.canvas_h,
             "props": self.props,
-            "handler_code": self.handler_code,
             "parent_id": self.parent_id,
             "parent_tab": self.parent_tab,
             "elem_id": self.elem_id,
@@ -120,7 +163,6 @@ class DesignElement:
             elem_id=data.get("elem_id", 0),
             canvas_w=data["canvas_w"],
             canvas_h=data["canvas_h"],
-            handler_code=data.get("handler_code", ""),
             parent_id=data.get("parent_id"),
             parent_tab=data.get("parent_tab"),
         )

@@ -8,6 +8,44 @@ class CanvasRenderer:
         self.canvas = canvas
         self.zoom = 1.0
 
+    def _image_path(self, path):
+        path=str(path or "").strip()
+        return path if os.path.isabs(path) else os.path.join(BASE_DIR,path) if path else ""
+
+    def _load_background_image(self, elem, path, w, h):
+        if not path or not PIL_AVAILABLE: return None
+        full=self._image_path(path); mode=str(elem.props.get("image_mode","Fit")).lower(); anchor=str(elem.props.get("image_anchor","Center")).lower()
+        key=(full,int(w),int(h),mode,anchor); cache=getattr(elem,"_image_bg_cache",None)
+        if cache and cache[0]==key: return cache[1]
+        try:
+            img=PILImage.open(full).convert("RGBA"); tw=max(1,int(w)); th=max(1,int(h)); iw,ih=img.size; ox=oy=0
+            if mode=="stretch": img=img.resize((tw,th),PILImage.Resampling.LANCZOS)
+            elif mode in ("fill","cover"):
+                sc=max(tw/iw,th/ih); nw=max(1,int(iw*sc)); nh=max(1,int(ih*sc)); img=img.resize((nw,nh),PILImage.Resampling.LANCZOS); l=max(0,(nw-tw)//2); t=max(0,(nh-th)//2); img=img.crop((l,t,l+tw,t+th))
+            elif mode in ("fit","contain"):
+                sc=min(tw/iw,th/ih); nw=max(1,int(iw*sc)); nh=max(1,int(ih*sc)); img=img.resize((nw,nh),PILImage.Resampling.LANCZOS); ox=(tw-nw)//2; oy=(th-nh)//2
+            elif mode in ("tile","repeat"):
+                base=PILImage.new("RGBA",(tw,th),(0,0,0,0))
+                for yy in range(0,th,img.height):
+                    for xx in range(0,tw,img.width): base.alpha_composite(img,(xx,yy))
+                img=base
+            else:
+                spots={"top-left":(0,0),"top":((tw-img.width)//2,0),"top-right":(tw-img.width,0),"left":(0,(th-img.height)//2),"center":((tw-img.width)//2,(th-img.height)//2),"right":(tw-img.width,(th-img.height)//2),"bottom-left":(0,th-img.height),"bottom":((tw-img.width)//2,th-img.height),"bottom-right":(tw-img.width,th-img.height)}
+                ox,oy=spots.get(anchor,spots["center"])
+                if img.width>tw or img.height>th:
+                    l=max(0,min(img.width-tw,-ox)); t=max(0,min(img.height-th,-oy)); img=img.crop((l,t,l+min(tw,img.width),t+min(th,img.height))); ox=oy=0
+            photo=ImageTk.PhotoImage(img); elem._image_bg_cache=(key,photo,ox,oy); return photo
+        except Exception:
+            elem._image_bg_cache=None; return None
+
+    def _draw_background_image(self, elem, x, y, w, h):
+        path=elem.props.get("image_path","")
+        if not path: return
+        photo=self._load_background_image(elem,path,w,h)
+        if photo is None: return
+        c=getattr(elem,"_image_bg_cache",None); ox,oy=(c[2],c[3]) if c else (0,0)
+        self.canvas.create_image(x+ox,y+oy,image=photo,anchor="nw",tags=("element",f"elem_{elem.elem_id}","background_image"))
+
     def _scaled_font(self, font):
         z = getattr(self, "zoom", 1.0)
         if z == 1.0:
@@ -41,20 +79,37 @@ class CanvasRenderer:
                 pass
         return text
 
-    def draw_grid(self, width: int, height: int) -> None:
-        self.canvas.delete("grid")
+    def draw_canvas_background(self, path, mode="Fit", anchor="Center", width=1, height=1):
+        self.canvas.delete("canvas_background")
+        if not path or not PIL_AVAILABLE: return
+        class _CanvasProxy: pass
+        proxy=_CanvasProxy(); proxy.props={"image_mode":mode,"image_anchor":anchor}; proxy._image_bg_cache=None
+        z=max(0.01, float(getattr(self, "zoom", 1.0)))
+        draw_w=max(1, int(round(float(width) * z)))
+        draw_h=max(1, int(round(float(height) * z)))
+        photo=self._load_background_image(proxy,path,draw_w,draw_h)
+        if photo is None: return
+        c=proxy._image_bg_cache; self._canvas_bg_ref=photo
+        self.canvas.create_image(c[2],c[3],image=photo,anchor="nw",tags=("canvas_background",))
+        # Layer order: surface < background image < elements < border.
+        self.canvas.tag_lower("canvas_background")
+        self.canvas.tag_raise("canvas_background", "canvas_surface")
+        self.canvas.tag_raise("canvas_border")
+
+    def draw_canvas_border(self, width: float, height: float) -> None:
+        self.canvas.delete("canvas_border")
         z = getattr(self, "zoom", 1.0)
-        sw, sh = int(width * z), int(height * z)
-        step = max(4, int(round(20 * z)))
-        for x in range(0, sw + 1, step):
-            self.canvas.create_line(x, 0, x, sh, fill="#E8E8E8",
-                                     tags="grid"
-                                     )
-        for y in range(0, sh + 1, step):
-            self.canvas.create_line(0, y, sw, y, fill="#E8E8E8",
-                                     tags="grid"
-                                     )
-        self.canvas.tag_lower("grid")
+        w, h = int(width * z), int(height * z)
+        if w < 2 or h < 2:
+            return
+        self.canvas.create_rectangle(1, 1, max(1, w - 1), max(1, h - 1), outline="#607D8B", width=2, tags="canvas_border")
+        self.canvas.tag_raise("canvas_border")
+
+    def draw_canvas_surface(self, width: float, height: float, color: str) -> None:
+        self.canvas.delete("canvas_surface")
+        z=getattr(self, "zoom", 1.0)
+        self.canvas.create_rectangle(0,0,int(width*z),int(height*z),fill=color,outline="",tags=("canvas_surface",))
+        self.canvas.tag_lower("canvas_surface")
 
     def draw_element(self, elem: DesignElement) -> None:
         z = getattr(self, "zoom", 1.0)
@@ -72,6 +127,7 @@ class CanvasRenderer:
         width_outline = 2 if elem.selected else 1
 
         self.erase_element(elem)
+        self._draw_background_image(elem,x,y,w,h)
 
         draw_method_name = f"_draw_{elem.elem_type.lower()}"
         if elem.elem_type == "RadioButton":
@@ -164,12 +220,32 @@ class CanvasRenderer:
             elem.handle_ids["ID"] = id_lbl
 
     def _draw_label(self, elem, x, y, w, h, bg, fg, font, outline, outline_w):
-        self._draw_flat_rect(elem, x, y, w, h, bg, outline, outline_w)
+        bw = self._configured_border_width(elem, outline_w)
+        self._draw_flat_rect(elem, x, y, w, h, bg, outline, bw)
         justify = elem.props.get("justify", "center")
         anchor_map = {"left": "w", "center": "center", "right": "e"}
         anchor = anchor_map.get(justify, "center")
         self._render_text_on_canvas(elem, x, y, w, h, elem.display_label, fg,
                                      font, anchor=anchor
+                                     )
+
+    def _draw_linklabel(self, elem, x, y, w, h, bg, fg, font, outline, outline_w):
+        # A LinkLabel is a Label that reads as clickable: no border chrome,
+        # left-aligned text in the configured (by default blue/underlined)
+        # font/color -- the same visual cue a WinForms LinkLabel gives.
+        self._draw_flat_rect(elem, x, y, w, h, bg, outline, 0)
+        self._render_text_on_canvas(elem, x + 2, y, w - 4, h,
+                                     elem.display_label, fg, font, anchor="w"
+                                     )
+
+    def _draw_statusbar(self, elem, x, y, w, h, bg, fg, font, outline, outline_w):
+        # Docked bottom bar: sunken bevel, left-aligned text -- the usual
+        # look for an application status bar. No background-image support
+        # is offered for this element (see config.py's per-type exclusion).
+        bw = self._configured_border_width(elem, outline_w)
+        self._draw_sunken_rect(elem, x, y, w, h, bg, outline, bw)
+        self._render_text_on_canvas(elem, x + 6, y, w - 12, h,
+                                     elem.display_label, fg, font, anchor="w"
                                      )
 
     def _draw_entry(self, elem, x, y, w, h, bg, fg, font, outline, outline_w):
@@ -427,53 +503,102 @@ class CanvasRenderer:
     def _draw_leddisplay_common(self, elem, x, y, w, h, bg, outline, outline_w, digits=1):
         self._draw_flat_rect(elem, x, y, w, h, bg, outline, outline_w)
         value = str(elem.props.get("value", "0")).strip()
+        try:
+            decimal_places = max(0, int(elem.props.get("decimal_places", 0) or 0))
+        except (TypeError, ValueError):
+            decimal_places = 0
+        if decimal_places > 0:
+            try:
+                value = f"{float(value):.{decimal_places}f}"
+            except (TypeError, ValueError):
+                pass
         if elem.elem_type == "LEDDigit":
-            chars = [value[-1:] or "0"]
+            chars = [(value[-1:] or "0", False)]
         else:
+            negative = value.startswith("-")
+            sign = "-" if negative else ""
+            raw = value[1:] if negative else value
+            raw_digits = [ch for ch in raw if ch.isdigit()]
             leading = str(elem.props.get("leading_zeros", "No")).strip().lower() in ("yes", "1", "true")
-            if leading and value.replace("-", "").isdigit():
-                sign = "-" if value.startswith("-") else ""
-                raw = value[1:] if sign else value
-                value = sign + raw.zfill(max(1, digits - (1 if sign else 0)))
-            chars = list(value[-digits:].rjust(digits))
+            if leading and raw_digits:
+                raw_digits = list(("".join(raw_digits)).zfill(max(1, digits - (1 if negative else 0))))
+            else:
+                raw_digits = raw_digits[-digits:]
+            if not raw_digits:
+                raw_digits = ["0"]
+            decimals = set()
+            di = 0
+            for ch in raw:
+                if ch == "." and di > 0:
+                    decimals.add(di - 1)
+                elif ch.isdigit():
+                    di += 1
+            chars = []
+            if sign:
+                chars.append(("-", False))
+            chars.extend((d, i in decimals) for i, d in enumerate(raw_digits))
+
         led_color = self._apply_brightness(
             self._get_valid_color(elem.props.get("color"), "#00FF66"),
             elem.props.get("brightness", 100)
         )
         off_color = self._get_valid_color(elem.props.get("off_color"), "#16351F")
-        margin = max(3, int(w * 0.02))
         try:
             gap = max(0, int(elem.props.get("digit_gap", 12) or 12))
         except (TypeError, ValueError):
             gap = 12
-        if len(chars) > 1:
-            min_digit_w = 8
-            max_gap = max(0, int((w - 2 * margin - min_digit_w * len(chars)) / (len(chars) - 1)))
-            gap = min(gap, max_gap)
-        digit_w = max(8, (w - 2 * margin - gap * max(0, len(chars) - 1)) / max(1, len(chars)))
+        margin = max(3, int(min(w, h) * 0.06))
+        # Keep each digit at a stable seven-segment aspect ratio. The designer
+        # therefore previews the same physical proportions used by the runtime
+        # widget instead of stretching one digit across the entire element.
         digit_h = max(12, h - 2 * margin)
+        digit_w = max(8, int(round(digit_h * 0.62)))
+        slot_count = max(1, len(chars))
+        required_w = slot_count * digit_w + max(0, slot_count - 1) * gap
+        available_w = max(1, w - 2 * margin)
+        if required_w > available_w and slot_count > 1:
+            gap = max(1, int((available_w - slot_count * digit_w) / max(1, slot_count - 1)))
+            required_w = slot_count * digit_w + max(0, slot_count - 1) * gap
+        if required_w > available_w:
+            scale = available_w / float(required_w)
+            digit_w = max(8, int(digit_w * scale))
+            digit_h = max(12, int(digit_h * scale))
+            gap = max(1, int(gap * scale)) if slot_count > 1 else 0
+            required_w = slot_count * digit_w + max(0, slot_count - 1) * gap
+        start_x = x + max(0, (w - required_w) / 2)
+        start_y = y + max(0, (h - digit_h) / 2)
         try:
             seg_w = max(1, int(elem.props.get("segment_width", 4) or 4))
         except (TypeError, ValueError):
             seg_w = 4
-        for i, char in enumerate(chars):
-            dx = x + margin + i * (digit_w + gap)
+        for i, (char, has_decimal) in enumerate(chars):
+            dx = start_x + i * (digit_w + gap)
             active = self._SEGMENTS.get(char.upper(), "")
             t = max(1, min(seg_w, int(min(digit_w, digit_h) * 0.16)))
             boxes = {
-                "a": (dx + t, y + margin, dx + digit_w - t, y + margin + t),
-                "g": (dx + t, y + h / 2 - t / 2, dx + digit_w - t, y + h / 2 + t / 2),
-                "d": (dx + t, y + h - margin - t, dx + digit_w - t, y + h - margin),
-                "f": (dx, y + margin + t, dx + t, y + h / 2 - t / 2),
-                "b": (dx + digit_w - t, y + margin + t, dx + digit_w, y + h / 2 - t / 2),
-                "e": (dx, y + h / 2 + t / 2, dx + t, y + h - margin - t),
-                "c": (dx + digit_w - t, y + h / 2 + t / 2, dx + digit_w, y + h - margin - t),
+                "a": (dx + t, start_y, dx + digit_w - t, start_y + t),
+                "g": (dx + t, start_y + digit_h / 2 - t / 2, dx + digit_w - t, start_y + digit_h / 2 + t / 2),
+                "d": (dx + t, start_y + digit_h - t, dx + digit_w - t, start_y + digit_h),
+                "f": (dx, start_y + t, dx + t, start_y + digit_h / 2 - t / 2),
+                "b": (dx + digit_w - t, start_y + t, dx + digit_w, start_y + digit_h / 2 - t / 2),
+                "e": (dx, start_y + digit_h / 2 + t / 2, dx + t, start_y + digit_h - t),
+                "c": (dx + digit_w - t, start_y + digit_h / 2 + t / 2, dx + digit_w, start_y + digit_h - t),
             }
             for seg, box in boxes.items():
                 color = led_color if seg in active else off_color
                 self.canvas.create_rectangle(*box, fill=color, outline=color,
                                               width=max(1, seg_w),
                                               tags=("element", f"elem_{elem.elem_id}"))
+            if has_decimal:
+                dot_r = max(3.0, min(digit_w, digit_h) * 0.075)
+                dot_x = dx + digit_w + gap / 2
+                if gap < dot_r * 2.2:
+                    dot_x = dx + digit_w - dot_r - 2
+                dot_x = min(x + w - dot_r - 1, max(x + dot_r + 1, dot_x))
+                dot_y = start_y + digit_h - max(dot_r + 3, digit_h * 0.16)
+                self.canvas.create_oval(dot_x - dot_r, dot_y - dot_r, dot_x + dot_r, dot_y + dot_r,
+                                        fill=led_color, outline=led_color,
+                                        tags=("element", f"elem_{elem.elem_id}"))
 
     def _draw_ledindicator(self, elem, x, y, w, h, bg, fg, font, outline, outline_w):
         self._draw_flat_rect(elem, x, y, w, h, bg, outline, outline_w)
@@ -561,27 +686,87 @@ class CanvasRenderer:
         prefix = str(elem.props.get("prefix", ""))
         suffix = str(elem.props.get("suffix", ""))
         secondary = str(elem.props.get("secondary_text", ""))
-        value_color = self._get_valid_color(elem.props.get("color"), "#1976D2")
-        secondary_color = self._get_valid_color(elem.props.get("secondary_color"), "#666666")
+        value_color = self._get_valid_color(elem.props.get("value_color", elem.props.get("color")), "#1976D2")
+        label_color = self._get_valid_color(elem.props.get("label_color"), self._get_valid_color(elem.props.get("secondary_color"), "#666666"))
+        unit_color = self._get_valid_color(elem.props.get("unit_color"), self._get_valid_color(elem.props.get("secondary_color"), "#666666"))
+        secondary_color = self._get_valid_color(elem.props.get("secondary_text_color", elem.props.get("secondary_color")), "#666666")
         style = str(elem.props.get("style", "Modern")).strip().lower()
         align = str(elem.props.get("align", "center")).strip().lower()
-        if align == "left": anchor, tx = "w", x + 7
-        elif align == "right": anchor, tx = "e", x + w - 7
-        else: anchor, tx = "center", x + w / 2
-        self.canvas.create_text(tx, y + 12, anchor=anchor, text=label,
-                                fill=secondary_color, font=("Segoe UI", max(7, min(11, int(h * .13))), "bold"),
-                                tags=("element", f"elem_{elem.elem_id}"))
+        if align == "left":
+            anchor, tx = "w", x + max(8, int(w * .05))
+        elif align == "right":
+            anchor, tx = "e", x + w - max(8, int(w * .05))
+        else:
+            anchor, tx = "center", x + w / 2
+
+        def normalize_font(value, fallback):
+            if isinstance(value, list):
+                return tuple(value)
+            if isinstance(value, tuple):
+                return value
+            return fallback
+
+        lf = normalize_font(elem.props.get("label_font"), ("Segoe UI", 9, "bold"))
+        vf = normalize_font(elem.props.get("value_font"), ("Segoe UI", 34, "bold"))
+        uf = normalize_font(elem.props.get("unit_font"), ("Segoe UI", 12))
+        sf = normalize_font(elem.props.get("secondary_font"), ("Segoe UI", 10))
+
+        def font_base_size(value, fallback):
+            try:
+                return max(1, abs(int(float(value[1]))))
+            except (TypeError, ValueError, IndexError):
+                return fallback
+
+        # Font family and size are controlled by the single Font property.
+        # Use negative Tk sizes so Canvas text is pixel-sized consistently.
+        lf = (lf[0], -font_base_size(lf, 9), *lf[2:])
+        vf = (vf[0], -font_base_size(vf, 34), *vf[2:])
+        uf = (uf[0], -font_base_size(uf, 12), *uf[2:])
+        sf = (sf[0], -font_base_size(sf, 10), *sf[2:])
         display_value = f"{prefix}{value}{suffix}"
-        value_font = ("Consolas", max(14, int(h * .34)), "bold") if style == "led" else ("Segoe UI", max(14, int(h * .40)), "bold")
-        self.canvas.create_text(tx, y + h * .53, anchor="center", text=display_value,
-                                fill=value_color, font=value_font,
-                                tags=("element", f"elem_{elem.elem_id}"))
-        self.canvas.create_text(x + w / 2, y + h * .76, text=unit,
-                                fill=secondary_color, font=("Segoe UI", max(8, int(h * .17))),
-                                tags=("element", f"elem_{elem.elem_id}"))
+
+        # Fit each row independently so no alignment mode can push text past
+        # the element boundary.
+        content_w = max(10, w - max(8, int(w * .10)))
+        def fit(f, text, minimum=7):
+            if not text:
+                return f
+            size = abs(int(f[1]))
+            while size > minimum:
+                self.canvas.create_text(-10000, -10000, text=text, font=f)
+                item = self.canvas.find_all()[-1]
+                bb = self.canvas.bbox(item)
+                self.canvas.delete(item)
+                if not bb or (bb[2] - bb[0]) <= content_w:
+                    break
+                size -= 1
+                f = (f[0], -size, *f[2:])
+            return f
+        lf = fit(lf, label)
+        vf = fit(vf, display_value, 12)
+        uf = fit(uf, unit)
+        sf = fit(sf, secondary)
+
+        top = y + max(8, int(h * .09))
+        value_y = y + int(h * (.43 if style == "led" else .46))
+        try:
+            unit_gap = max(0, int(float(elem.props.get("unit_gap", 18) or 18)))
+        except (TypeError, ValueError):
+            unit_gap = 18
+        unit_y = value_y + max(10, unit_gap)
+        secondary_y = y + h - max(6, int(h * .07))
         if secondary:
-            self.canvas.create_text(x + w / 2, y + h - 7, anchor="s", text=secondary,
-                                    fill=secondary_color, font=("Segoe UI", max(7, int(h * .11))),
+            unit_y = min(unit_y, secondary_y - max(12, abs(int(sf[1]))) - 4)
+
+        self.canvas.create_text(tx, top, anchor=anchor, text=label, fill=label_color, font=lf,
+                                tags=("element", f"elem_{elem.elem_id}"))
+        self.canvas.create_text(tx, value_y, anchor=anchor, text=display_value, fill=value_color, font=vf,
+                                tags=("element", f"elem_{elem.elem_id}"))
+        if unit:
+            self.canvas.create_text(tx, unit_y, anchor=anchor, text=unit, fill=unit_color, font=uf,
+                                    tags=("element", f"elem_{elem.elem_id}"))
+        if secondary:
+            self.canvas.create_text(tx, secondary_y, anchor="s", text=secondary, fill=secondary_color, font=sf,
                                     tags=("element", f"elem_{elem.elem_id}"))
 
     def _draw_frame(self, elem, x, y, w, h, bg, fg, font, outline, outline_w):
@@ -791,6 +976,27 @@ class CanvasRenderer:
             font=("Segoe UI", 8), tags=("element", f"elem_{elem.elem_id}")
             )
 
+    def _draw_datetimepicker(self, elem, x, y, w, h, bg, fg, font, outline, outline_w):
+        self._draw_sunken_rect(elem, x, y, w, h, bg, outline, outline_w)
+        display_format = str(elem.props.get("display_format", "Date & Time") or "Date & Time")
+        text = "Date & Time" if display_format == "Date & Time" else display_format
+        if display_format == "Date":
+            text = str(elem.props.get("date_pattern", "yyyy-mm-dd"))
+        elif display_format == "Time":
+            text = "12:30 PM" if str(elem.props.get("time_format", "24h")) == "12h" else "12:30:00"
+        elif display_format == "Custom":
+            text = str(elem.props.get("custom_format", "Custom format")) or "Custom format"
+        self.canvas.create_text(
+            x + 8, y + h / 2, text=text, anchor="w", fill=fg,
+            font=self._scaled_font(font), tags=("element", f"elem_{elem.elem_id}")
+        )
+        ax = x + w - max(24, h) / 2
+        self.canvas.create_polygon(
+            ax - 4, y + h / 2 - 2, ax + 4, y + h / 2 - 2,
+            ax, y + h / 2 + 4, fill=fg, outline="",
+            tags=("element", f"elem_{elem.elem_id}")
+        )
+
     def _draw_calendar(
             self, elem, x, y, w, h, bg, fg, font, outline, outline_w
             ):
@@ -853,15 +1059,49 @@ class CanvasRenderer:
                 col = 0
                 row += 1
 
+    def _draw_datetimepicker(self, elem, x, y, w, h, bg, fg, font, outline, outline_w):
+        """Render DateTimePicker as a compact combo-style field in the designer."""
+        bw = max(1, outline_w)
+        self._draw_sunken_rect(elem, x, y, w, h, bg, outline, bw)
+        pad = max(5, int(h * 0.20))
+        button_w = max(24, int(h * 0.95))
+        display_format = str(elem.props.get("display_format", "Date & Time") or "Date & Time")
+        sample = {
+            "Date": "09/05/2026",
+            "Date & Time": "09/05/2026 14:30",
+            "Time": "14:30",
+            "Custom": "Custom format",
+        }.get(display_format, "09/05/2026 14:30")
+        self._render_text_on_canvas(elem, x + pad, y, max(1, w - button_w - 2*pad), h,
+                                    str(elem.props.get("display_preview", sample) or sample), fg,
+                                    font, anchor="w")
+        bx = x + w - button_w
+        self.canvas.create_rectangle(bx, y + 1, x + w - 1, y + h - 1,
+                                     fill=bg, outline="", tags=("element", f"elem_{elem.elem_id}"))
+        cx, cy = bx + button_w/2, y + h/2
+        self.canvas.create_polygon(cx-4, cy-2, cx+4, cy-2, cx, cy+3, fill=fg,
+                                   outline="", tags=("element", f"elem_{elem.elem_id}"))
+
     def _draw_fallback(
             self, elem, x, y, w, h, bg, fg, font, outline, outline_w
             ):
-        self._draw_flat_rect(elem, x, y, w, h, bg, outline, outline_w)
+        bw = self._configured_border_width(elem, outline_w)
+        self._draw_flat_rect(elem, x, y, w, h, bg, outline, bw)
         self._render_text_on_canvas(elem, x, y, w, h, elem.display_label, fg,
                                      font
                                      )
 
+    def _configured_border_width(self, elem, default_width=1):
+        """Return the designer-visible border width, honoring legacy aliases."""
+        raw = elem.props.get("border_width", elem.props.get("bd", ""))
+        try:
+            value = int(float(raw)) if str(raw).strip() else int(default_width)
+        except (TypeError, ValueError):
+            value = int(default_width)
+        return max(0, value)
+
     def _draw_flat_rect(self, elem, x, y, w, h, fill, outline, outline_w):
+        fill = "" if elem.props.get("image_path") else fill
         elem.rect_id = self.canvas.create_rectangle(
             x, y, x + w, y + h, fill=fill, outline=outline,
             width=outline_w,
@@ -869,6 +1109,7 @@ class CanvasRenderer:
         )
 
     def _draw_sunken_rect(self, elem, x, y, w, h, fill, outline, outline_w):
+        fill = "" if elem.props.get("image_path") else fill
         self.canvas.create_rectangle(x, y, x + w, y + h, fill=fill,
                                       outline=outline, width=outline_w,
                                       tags=("element", f"elem_{elem.elem_id}")
@@ -891,6 +1132,7 @@ class CanvasRenderer:
                                  )
 
     def _draw_raised_rect(self, elem, x, y, w, h, fill, outline, outline_w):
+        fill = "" if elem.props.get("image_path") else fill
         self.canvas.create_rectangle(x, y, x + w, y + h, fill=fill,
                                       outline=outline, width=outline_w,
                                       tags=("element", f"elem_{elem.elem_id}")

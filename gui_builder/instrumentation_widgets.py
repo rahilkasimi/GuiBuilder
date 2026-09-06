@@ -7,6 +7,9 @@ so exported/preview applications do not depend on the GUI Builder package.
 
 INSTRUMENTATION_RUNTIME_CODE = r'''
 import math
+import os
+import tkinter as tk
+from PIL import Image, ImageTk
 
 
 def _builder_bool(value, default=False):
@@ -37,6 +40,39 @@ def _builder_bright_color(color, brightness):
     return text
 
 
+
+
+def _builder_draw_background(owner, canvas):
+    path=str(getattr(owner,"_background_image","") or "")
+    if not path: return
+    try:
+        full=path if os.path.isabs(path) else os.path.join(os.path.dirname(__file__),path)
+        img=Image.open(full).convert("RGBA"); w=max(1,canvas.winfo_width()); h=max(1,canvas.winfo_height()); iw,ih=img.size
+        mode=str(getattr(owner,"_background_image_mode","Fit") or "Fit").lower()
+        if mode=="stretch": img=img.resize((w,h),Image.Resampling.LANCZOS)
+        elif mode in ("fill","cover"):
+            sc=max(w/iw,h/ih); nw=max(1,int(iw*sc)); nh=max(1,int(ih*sc)); img=img.resize((nw,nh),Image.Resampling.LANCZOS); l=max(0,(nw-w)//2); t=max(0,(nh-h)//2); img=img.crop((l,t,l+w,t+h))
+        elif mode in ("fit","contain"):
+            sc=min(w/iw,h/ih); img=img.resize((max(1,int(iw*sc)),max(1,int(ih*sc))),Image.Resampling.LANCZOS)
+        elif mode in ("tile","repeat"):
+            base=Image.new("RGBA",(w,h),(0,0,0,0))
+            for yy in range(0,h,img.height):
+                for xx in range(0,w,img.width): base.alpha_composite(img,(xx,yy))
+            img=base
+        photo=ImageTk.PhotoImage(img); owner._background_image_ref=photo; canvas.create_image(w/2,h/2,image=photo,anchor="center",tags="_builder_bg"); canvas.tag_lower("_builder_bg")
+    except Exception:
+        pass
+
+def _builder_int(value, default=0, minimum=None, maximum=None):
+    try:
+        result = int(float(value))
+    except (TypeError, ValueError):
+        result = default
+    if minimum is not None:
+        result = max(minimum, result)
+    if maximum is not None:
+        result = min(maximum, result)
+    return result
 class BuilderPushButton(tk.Frame):
     """Canvas-rendered push button with square/round and toggle/momentary modes."""
 
@@ -51,6 +87,10 @@ class BuilderPushButton(tk.Frame):
             kwargs["height"] = height
         super().__init__(master, bg=bg, bd=0, highlightthickness=0, **kwargs)
         self.pack_propagate(False)
+        self._background_image = ""
+        self._background_image_mode = "Fit"
+        self._background_image_anchor = "Center"
+        self._background_image_ref = None
         self.text = str(text)
         self.shape = str(shape or "Square")
         self.style = str(style or "Mechanical")
@@ -73,8 +113,14 @@ class BuilderPushButton(tk.Frame):
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
         self.canvas.bind("<Leave>", self._on_leave)
         self.bind("<Configure>", lambda e: self._redraw())
+        self.bind("<Map>", lambda e: self.after_idle(self._redraw))
+        self.after(25, self._redraw)
+        self.after(100, self._redraw)
         self.after_idle(self._redraw)
         self._redraw()
+
+    def set_background_image(self, path, mode="Fit", anchor="Center"):
+        self._background_image=path or ""; self._background_image_mode=mode or "Fit"; self._background_image_anchor=anchor or "Center"; self._redraw()
 
     def add_state_listener(self, callback):
         if callable(callback) and callback not in self._listeners:
@@ -138,6 +184,7 @@ class BuilderPushButton(tk.Frame):
             return
         c = self.canvas
         c.delete("all")
+        _builder_draw_background(self,c)
         w = max(10, c.winfo_width())
         h = max(10, c.winfo_height())
         pad = max(2, self.border_width)
@@ -178,6 +225,10 @@ class BuilderRadioButton(tk.Frame):
             kwargs["height"] = height
         super().__init__(master, bg=bg, bd=0, highlightthickness=0, **kwargs)
         self.pack_propagate(False)
+        self._background_image = ""
+        self._background_image_mode = "Fit"
+        self._background_image_anchor = "Center"
+        self._background_image_ref = None
         self.text = str(text)
         self.variable = variable if variable is not None else tk.StringVar(value="")
         self.value = str(value)
@@ -195,12 +246,19 @@ class BuilderRadioButton(tk.Frame):
         self.canvas.bind("<Button-1>", self._on_click)
         self.variable.trace_add("write", self._on_variable_change)
         self.bind("<Configure>", lambda e: self._redraw())
+        self.bind("<Map>", lambda e: self.after_idle(self._redraw))
+        self.after(25, self._redraw)
+        self.after(100, self._redraw)
+        self.after_idle(self._redraw)
         if _builder_bool(selected):
             try:
                 self.variable.set(self.value)
             except Exception:
                 pass
         self._redraw()
+
+    def set_background_image(self, path, mode="Fit", anchor="Center"):
+        self._background_image=path or ""; self._background_image_mode=mode or "Fit"; self._background_image_anchor=anchor or "Center"; self._redraw()
 
     def add_state_listener(self, callback):
         if callable(callback) and callback not in self._listeners:
@@ -242,6 +300,7 @@ class BuilderRadioButton(tk.Frame):
             return
         c = self.canvas
         c.delete("all")
+        _builder_draw_background(self,c)
         w, h = max(20, c.winfo_width()), max(20, c.winfo_height())
         cx, cy = 12, h / 2
         selected = self.is_selected()
@@ -271,19 +330,33 @@ _BUILDER_SEGMENTS = {
 
 
 class BuilderLEDDisplay(tk.Frame):
-    """Seven-segment numeric display used for both single and multi-digit LEDs."""
+    """Seven-segment numeric display used for single and multi-digit LEDs.
+
+    The display uses a fixed digit geometry derived from widget height.  The
+    number of configured digit slots therefore remains stable across values
+    and across Run Preview vs. external Python execution.  The complete
+    digit bank is centered in the available widget instead of stretching each
+    digit to fill the canvas width.
+    """
 
     def __init__(self, master, value="0", digits=1, color="#00FF66", off_color="#16351F",
                  brightness=100, glow="Yes", leading_zeros="No", segment_width=4, digit_gap=12,
-                 mode="Multi Digit", width=None, height=None, **kwargs):
+                 decimal_places=0, mode="Multi Digit", width=None, height=None, **kwargs):
         if width is not None:
             kwargs["width"] = width
         if height is not None:
             kwargs["height"] = height
         super().__init__(master, bg=kwargs.pop("bg", "#101010"), bd=0, highlightthickness=0, **kwargs)
         self.pack_propagate(False)
+        self._background_image = ""
+        self._background_image_mode = "Fit"
+        self._background_image_anchor = "Center"
+        self._background_image_ref = None
         self.value = str(value)
-        self.digits = max(1, int(digits or 1))
+        try:
+            self.digits = max(1, int(digits or 1))
+        except (TypeError, ValueError):
+            self.digits = 1
         self.color = str(color or "#00FF66")
         self.off_color = str(off_color or "#16351F")
         self.brightness = _builder_clamp(brightness, 0, 100)
@@ -297,12 +370,21 @@ class BuilderLEDDisplay(tk.Frame):
             self.digit_gap = max(0, int(digit_gap))
         except (TypeError, ValueError):
             self.digit_gap = 12
+        try:
+            self.decimal_places = max(0, int(decimal_places))
+        except (TypeError, ValueError):
+            self.decimal_places = 0
         self.mode = str(mode or "Multi Digit")
         self.canvas = tk.Canvas(self, bg=self["bg"], bd=0, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
         self.bind("<Configure>", lambda e: self._redraw())
+        self.bind("<Map>", lambda e: self.after_idle(self._redraw))
+        self.after(25, self._redraw)
+        self.after(100, self._redraw)
         self.after_idle(self._redraw)
-        self._redraw()
+
+    def set_background_image(self, path, mode="Fit", anchor="Center"):
+        self._background_image=path or ""; self._background_image_mode=mode or "Fit"; self._background_image_anchor=anchor or "Center"; self._redraw()
 
     def set_value(self, value):
         self.value = str(value)
@@ -310,15 +392,44 @@ class BuilderLEDDisplay(tk.Frame):
 
     def _format_chars(self):
         text = self.value.strip()
+        if self.decimal_places > 0:
+            try:
+                text = f"{float(text):.{self.decimal_places}f}"
+            except (TypeError, ValueError):
+                pass
         if self.mode.lower().startswith("single"):
-            return [(text[-1:] or "0")]
-        if self.leading_zeros and text.replace("-", "").isdigit():
-            sign = "-" if text.startswith("-") else ""
-            digits = text[1:] if sign else text
-            text = sign + digits.zfill(self.digits - (1 if sign else 0))
-        else:
-            text = text[-self.digits:]
-        return list(text.rjust(self.digits))
+            return [(text[-1:] or "0", False)]
+
+        negative = text.startswith("-")
+        sign = "-" if negative else ""
+        raw = text[1:] if negative else text
+        raw_digits = [ch for ch in raw if ch.isdigit()]
+        if self.leading_zeros and raw_digits:
+            target = max(1, self.digits - (1 if negative else 0))
+            raw_digits = list("".join(raw_digits).zfill(target))
+        if not raw_digits:
+            raw_digits = ["0"]
+
+        decimals = set()
+        digit_index = 0
+        for ch in raw:
+            if ch == "." and digit_index > 0:
+                decimals.add(digit_index - 1)
+            elif ch.isdigit():
+                digit_index += 1
+
+        actual = []
+        if sign:
+            actual.append(("-", False))
+        actual.extend((digit, idx in decimals) for idx, digit in enumerate(raw_digits))
+        actual = actual[-self.digits:]
+
+        # Physical slots are fixed by the configured digit count.  Unused
+        # positions are blank/off but still occupy their full digit geometry.
+        # Numeric content is right-aligned, which is the conventional behavior
+        # for calculator/instrument displays.
+        padding = max(0, self.digits - len(actual))
+        return [(" ", False)] * padding + actual
 
     def _segment_points(self, x, y, w, h, seg):
         t = max(1, min(self.segment_width, int(min(w, h) * 0.16)))
@@ -336,31 +447,69 @@ class BuilderLEDDisplay(tk.Frame):
             return
         c = self.canvas
         c.delete("all")
-        w, h = max(30, c.winfo_width()), max(20, c.winfo_height())
+        _builder_draw_background(self,c)
+        cw, ch = c.winfo_width(), c.winfo_height()
+        if cw <= 1 or ch <= 1:
+            self.after(50, self._redraw)
+            return
+
+        pad = max(4, int(min(cw, ch) * 0.06))
+        digit_h = max(16, ch - 2 * pad)
+        # Seven-segment aspect ratio is intentionally fixed rather than
+        # expanding to consume the whole widget width. This is what keeps
+        # digits stable in external Python execution too.
+        aspect = 0.62
+        digit_w = max(10, int(round(digit_h * aspect)))
         chars = self._format_chars()
-        margin = max(3, int(w * 0.02))
+        if self.mode.lower().startswith("multi"):
+            slot_count = max(1, self.digits + (1 if chars and chars[0][0] == "-" else 0))
+        else:
+            slot_count = max(1, len(chars))
+
         gap = self.digit_gap
-        if len(chars) > 1:
-            min_digit_w = 8
-            max_gap = max(0, int((w - 2 * margin - min_digit_w * len(chars)) / (len(chars) - 1)))
-            gap = min(gap, max_gap)
-        digit_w = max(8, (w - 2 * margin - gap * max(0, len(chars) - 1)) / max(1, len(chars)))
-        digit_h = max(12, h - 2 * margin)
-        x = margin
-        glow_width = max(1, int(self.segment_width + 4))
-        for char in chars:
+        required_w = slot_count * digit_w + max(0, slot_count - 1) * gap
+        available_w = max(1, cw - 2 * pad)
+        if required_w > available_w and slot_count > 1:
+            # Preserve actual digit size as far as possible. Only reduce the
+            # user gap when the configured bank cannot fit.
+            gap = max(1, int((available_w - slot_count * digit_w) / max(1, slot_count - 1)))
+            required_w = slot_count * digit_w + max(0, slot_count - 1) * gap
+        if required_w > available_w:
+            # Very small widgets: scale the entire bank uniformly as a last
+            # resort, while retaining the configured number of slots.
+            scale = available_w / float(required_w)
+            digit_w = max(8, int(digit_w * scale))
+            digit_h = max(12, int(digit_h * scale))
+            gap = max(1, int(gap * scale)) if slot_count > 1 else 0
+            required_w = slot_count * digit_w + max(0, slot_count - 1) * gap
+
+        x = (cw - required_w) / 2
+        y = (ch - digit_h) / 2
+        glow_width = max(1, int(self.segment_width))
+        active_color = _builder_bright_color(self.color, self.brightness)
+        for char, has_decimal in chars:
             active = _BUILDER_SEGMENTS.get(char.upper(), "")
             for seg in "abcdefg":
-                x1, y1, x2, y2 = self._segment_points(x, margin, digit_w, digit_h, seg)
-                is_on = seg in active
-                color = _builder_bright_color(self.color, self.brightness) if is_on else self.off_color
-                if is_on and self.glow:
-                    c.create_rectangle(x1, y1, x2, y2,
-                                       outline=color, fill=color,
-                                       width=glow_width)
-                c.create_rectangle(x1, y1, x2, y2,
-                                   outline=color, fill=color,
-                                   width=max(1, self.segment_width))
+                x1, y1, x2, y2 = self._segment_points(x, y, digit_w, digit_h, seg)
+                color = active_color if seg in active else self.off_color
+                if seg in active and self.glow:
+                    c.create_rectangle(x1, y1, x2, y2, outline=color, fill=color,
+                                       width=max(1, glow_width), tags="led-segment")
+                else:
+                    c.create_rectangle(x1, y1, x2, y2, outline=color, fill=color,
+                                       width=max(1, self.segment_width), tags="led-segment")
+            if has_decimal:
+                # The decimal belongs in the inter-digit gap when possible.
+                # It is deliberately larger than the previous tiny bottom
+                # corner dot and is vertically centered around the lower half.
+                dot_r = max(3.0, min(digit_w, digit_h) * 0.075)
+                gap_center_x = x + digit_w + gap / 2
+                if gap < dot_r * 2.2:
+                    gap_center_x = x + digit_w - dot_r - 2
+                dot_x = min(cw - dot_r - 1, max(dot_r + 1, gap_center_x))
+                dot_y = y + digit_h - max(dot_r + 3, digit_h * 0.16)
+                c.create_oval(dot_x - dot_r, dot_y - dot_r, dot_x + dot_r, dot_y + dot_r,
+                              fill=active_color, outline=active_color, tags="led-decimal")
             x += digit_w + gap
 
 
@@ -375,6 +524,10 @@ class BuilderLEDIndicator(tk.Frame):
             kwargs["height"] = height
         super().__init__(master, bg=bg, bd=0, highlightthickness=0, **kwargs)
         self.pack_propagate(False)
+        self._background_image = ""
+        self._background_image_mode = "Fit"
+        self._background_image_anchor = "Center"
+        self._background_image_ref = None
         self.state = _builder_bool(state)
         self.on_color = str(on_color or "#00FF66")
         self.off_color = str(off_color or "#16351F")
@@ -388,8 +541,14 @@ class BuilderLEDIndicator(tk.Frame):
         self.canvas = tk.Canvas(self, bg=bg, bd=0, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
         self.bind("<Configure>", lambda e: self._redraw())
+        self.bind("<Map>", lambda e: self.after_idle(self._redraw))
+        self.after(25, self._redraw)
+        self.after(100, self._redraw)
         self.after_idle(self._redraw)
         self._redraw()
+
+    def set_background_image(self, path, mode="Fit", anchor="Center"):
+        self._background_image=path or ""; self._background_image_mode=mode or "Fit"; self._background_image_anchor=anchor or "Center"; self._redraw()
 
     def set_state(self, value):
         self.state = bool(value)
@@ -403,6 +562,7 @@ class BuilderLEDIndicator(tk.Frame):
             return
         c = self.canvas
         c.delete("all")
+        _builder_draw_background(self,c)
         w, h = max(12, c.winfo_width()), max(12, c.winfo_height())
         d = max(6, min(w, h) - 2)
         x1, y1 = (w - d) / 2, (h - d) / 2
@@ -433,6 +593,10 @@ class BuilderGauge(tk.Frame):
             kwargs["height"] = height
         super().__init__(master, bg=bg, bd=0, highlightthickness=0, **kwargs)
         self.pack_propagate(False)
+        self._background_image = ""
+        self._background_image_mode = "Fit"
+        self._background_image_anchor = "Center"
+        self._background_image_ref = None
         self.value = value
         self.min_value = min_value
         self.max_value = max_value
@@ -451,8 +615,14 @@ class BuilderGauge(tk.Frame):
         self.canvas = tk.Canvas(self, bg=bg, bd=0, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
         self.bind("<Configure>", lambda e: self._redraw())
+        self.bind("<Map>", lambda e: self.after_idle(self._redraw))
+        self.after(25, self._redraw)
+        self.after(100, self._redraw)
         self.after_idle(self._redraw)
         self._redraw()
+
+    def set_background_image(self, path, mode="Fit", anchor="Center"):
+        self._background_image=path or ""; self._background_image_mode=mode or "Fit"; self._background_image_anchor=anchor or "Center"; self._redraw()
 
     def set_value(self, value):
         self.value = value
@@ -496,48 +666,95 @@ class BuilderGauge(tk.Frame):
         nx, ny = self._point(cx, cy, needle_len, value_angle)
         c.create_line(cx, cy, nx, ny, fill=self.needle_color, width=max(2, self.thickness // 2))
         c.create_oval(cx - 5, cy - 5, cx + 5, cy + 5, fill=self.needle_color, outline="")
-        if self.show_value:
-            try:
-                txt = f"{float(self.value):g}{self.unit}"
-            except (TypeError, ValueError):
-                txt = f"{self.value}{self.unit}"
-            c.create_text(cx, cy + size * 0.23, text=txt,
-                          fill=self.tick_color, font=("Segoe UI", 10, "bold"))
-
-
 class BuilderMeasurementDisplay(tk.Frame):
-    """Composite value + unit + label display for dashboards and instruments."""
+    """Composite measurement display with deterministic, pixel-based layout."""
 
     def __init__(self, master, label="Temperature", value="24", unit="°C",
                  style="Modern", color="#1976D2", bg="#FFFFFF", decimal_places=0,
                  prefix="", suffix="", secondary_text="", secondary_color="#666666",
-                 align="center", led_digits=3, width=None, height=None, **kwargs):
+                 align="center", led_digits=3, width=None, height=None,
+                 label_font=("Segoe UI", 9, "bold"), label_font_size=None, label_color="#666666",
+                 value_font=("Segoe UI", 34, "bold"), value_font_size=None, value_color=None,
+                 unit_font=("Segoe UI", 12), unit_font_size=None, unit_color="#666666",
+                 secondary_font=("Segoe UI", 10), secondary_font_size=None,
+                 secondary_text_color=None, unit_gap=18, **kwargs):
         if width is not None:
             kwargs["width"] = width
         if height is not None:
             kwargs["height"] = height
         super().__init__(master, bg=bg, bd=0, highlightthickness=0, **kwargs)
         self.pack_propagate(False)
+        self._background_image = ""
+        self._background_image_mode = "Fit"
+        self._background_image_anchor = "Center"
+        self._background_image_ref = None
         self.label = str(label)
         self.value = str(value)
         self.unit = str(unit)
         self.style = str(style or "Modern")
-        self.color = str(color or "#1976D2")
         self.bg = str(bg or "#FFFFFF")
-        try: self.decimal_places = max(0, int(decimal_places))
-        except (TypeError, ValueError): self.decimal_places = 0
+        self.decimal_places = _builder_int(decimal_places, 0, minimum=0)
         self.prefix = str(prefix or "")
         self.suffix = str(suffix or "")
         self.secondary_text = str(secondary_text or "")
-        self.secondary_color = str(secondary_color or "#666666")
-        self.align = str(align or "center")
-        try: self.led_digits = max(1, int(led_digits))
-        except (TypeError, ValueError): self.led_digits = 3
+        self.align = str(align or "center").strip().lower()
+        self.led_digits = max(1, _builder_int(led_digits, 3, minimum=1))
+        self.label_font = label_font if isinstance(label_font, (tuple, list)) else ("Segoe UI", 9, "bold")
+        self.value_font = value_font if isinstance(value_font, (tuple, list)) else ("Segoe UI", 34, "bold")
+        self.unit_font = unit_font if isinstance(unit_font, (tuple, list)) else ("Segoe UI", 12)
+        self.secondary_font = secondary_font if isinstance(secondary_font, (tuple, list)) else ("Segoe UI", 10)
+        # The Font tuple contains both family and size and is the sole source
+        # of truth for new projects. The *_font_size arguments remain accepted
+        # only for backward compatibility with older generated code.
+        self.label_color = str(label_color or secondary_color or "#666666")
+        self.value_color = str(value_color or color or "#1976D2")
+        self.unit_color = str(unit_color or secondary_color or "#666666")
+        self.secondary_text_color = str(secondary_text_color or secondary_color or "#666666")
+        self.color = self.value_color  # legacy alias
+        try: self.unit_gap = max(0, int(unit_gap))
+        except (TypeError, ValueError): self.unit_gap = 18
         self.canvas = tk.Canvas(self, bg=self.bg, bd=0, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
         self.bind("<Configure>", lambda e: self._redraw())
+        self.bind("<Map>", lambda e: self.after_idle(self._redraw))
+        self.after(25, self._redraw)
+        self.after(100, self._redraw)
         self.after_idle(self._redraw)
-        self._redraw()
+
+    @staticmethod
+    def set_background_image(self, path, mode="Fit", anchor="Center"):
+        self._background_image=path or ""; self._background_image_mode=mode or "Fit"; self._background_image_anchor=anchor or "Center"; self._redraw()
+
+    @staticmethod
+    def _font_size(font_value, default):
+        try:
+            size = int(round(abs(float(font_value[1]))))
+            return size or default
+        except (TypeError, ValueError, IndexError):
+            return default
+
+    @staticmethod
+    def _font_family(font_value, default):
+        try:
+            family = str(font_value[0]).strip()
+            return family or default
+        except (TypeError, IndexError):
+            return default
+
+    @staticmethod
+    def _font_options(font_value):
+        try:
+            opts = tuple(font_value[2:])
+            return opts
+        except (TypeError, IndexError):
+            return ()
+
+    def _pixel_font(self, font_value, size, fallback_family):
+        family = self._font_family(font_value, fallback_family)
+        options = self._font_options(font_value)
+        # Negative Tk font size means pixels, not points. This makes external
+        # execution consistent with Run Preview and Windows/Linux DPI scaling.
+        return (family, -max(1, int(size)), *options)
 
     def set_value(self, value):
         self.value = str(value)
@@ -546,35 +763,104 @@ class BuilderMeasurementDisplay(tk.Frame):
     def _formatted_value(self):
         try:
             num = float(self.value)
-            if self.decimal_places:
-                core = f"{num:.{self.decimal_places}f}"
-            else:
-                core = f"{num:g}"
+            core = f"{num:.{self.decimal_places}f}" if self.decimal_places else f"{num:g}"
         except (TypeError, ValueError):
             core = self.value
         return f"{self.prefix}{core}{self.suffix}"
 
+    def _band_x(self, width, anchor):
+        pad = max(8, int(width * 0.05))
+        if anchor == "w":
+            return pad
+        if anchor == "e":
+            return width - pad
+        return width / 2
+
+    def set_label(self, text):
+        self.label = str(text)
+        self._redraw()
+
+    def set_unit(self, text):
+        self.unit = str(text)
+        self._redraw()
+
+    def set_secondary_text(self, text):
+        self.secondary_text = str(text)
+        self._redraw()
+
     def _redraw(self):
-        if not self.winfo_exists(): return
-        c = self.canvas; c.delete("all")
-        w, h = max(50, c.winfo_width()), max(30, c.winfo_height())
-        anchor = {"left": "w", "right": "e"}.get(self.align.lower(), "center")
-        tx = 8 if anchor == "w" else (w - 8 if anchor == "e" else w / 2)
-        c.create_text(tx, 12, anchor=anchor, text=self.label, fill=self.secondary_color,
-                      font=("Segoe UI", 9, "bold"))
+        if not self.winfo_exists():
+            return
+        c = self.canvas
+        c.delete("all")
+        _builder_draw_background(self,c)
+        w, h = c.winfo_width(), c.winfo_height()
+        if w <= 1 or h <= 1:
+            self.after(50, self._redraw)
+            return
+
+        # Use a common anchor for each row so left/right/center alignment is
+        # coherent across the entire composite display.
+        anchor = {"left": "w", "right": "e"}.get(self.align, "center")
+        x = self._band_x(w, anchor)
+        usable_w = max(1, w - 2 * max(8, int(w * 0.05)))
+
+        # Reserve stable vertical bands. Font sizes are reduced only when a
+        # specific line would exceed the available width; they never collapse
+        # to a tiny default because of point/pixel DPI differences.
+        label_size = max(1, self._font_size(self.label_font, 9))
+        value_size = max(1, self._font_size(self.value_font, 34))
+        unit_size = max(1, self._font_size(self.unit_font, 12))
+        secondary_size = max(1, self._font_size(self.secondary_font, 10))
+        label_font = self._pixel_font(self.label_font, label_size, "Segoe UI")
+        value_font = self._pixel_font(self.value_font, value_size, "Segoe UI")
+        unit_font = self._pixel_font(self.unit_font, unit_size, "Segoe UI")
+        secondary_font = self._pixel_font(self.secondary_font, secondary_size, "Segoe UI")
+
+        label_text = self.label
         value_text = self._formatted_value()
-        if self.style.lower() == "led":
-            value_text = f"{value_text} {self.unit}".rstrip()
-            c.create_text(tx, h * 0.52, anchor="center", text=value_text,
-                          fill=self.color, font=("Consolas", max(14, int(h * 0.36)), "bold"))
+        unit_text = self.unit
+        secondary_text = self.secondary_text
+
+        def fit_font(text, base_font, min_size=8):
+            if not text:
+                return base_font
+            current = base_font
+            for _ in range(40):
+                bbox = c.bbox(c.create_text(-10000, -10000, text=text, font=current))
+                c.delete("all")
+                width = 0 if not bbox else bbox[2] - bbox[0]
+                if width <= usable_w or abs(int(current[1])) <= min_size:
+                    return current
+                current = (current[0], int(current[1] + 1) if current[1] < 0 else int(current[1] - 1), *current[2:])
+            return current
+
+        # Since bbox measurement itself creates canvas items, perform it before
+        # the final four text items and redraw after choosing the sizes.
+        label_font = fit_font(label_text, label_font, 7)
+        value_font = fit_font(value_text, value_font, 12)
+        unit_font = fit_font(unit_text, unit_font, 7)
+        secondary_font = fit_font(secondary_text, secondary_font, 7)
+
+        top = max(8, int(h * 0.08))
+        label_y = top
+        value_y = int(h * (0.40 if self.style.lower() == "led" else 0.46))
+        unit_y = value_y + max(unit_size // 2, self.unit_gap)
+        if secondary_text:
+            secondary_y = h - max(6, int(h * 0.07))
+            # Keep the unit and secondary row from colliding in short widgets.
+            unit_y = min(unit_y, secondary_y - max(secondary_size, unit_size) - 4)
         else:
-            c.create_text(tx, h * 0.55, anchor="center", text=value_text,
-                          fill=self.color, font=("Segoe UI", max(16, int(h * 0.42)), "bold"))
-            c.create_text(tx + (w * 0.30 if anchor == "center" else 0), h * 0.80,
-                          anchor="center", text=self.unit, fill=self.secondary_color,
-                          font=("Segoe UI", max(8, int(h * 0.20))))
-        if self.secondary_text:
-            c.create_text(tx, h - 7, anchor="s", text=self.secondary_text,
-                          fill=self.secondary_color,
-                          font=("Segoe UI", max(7, int(h * 0.13))))
+            secondary_y = None
+
+        c.create_text(x, label_y, anchor=anchor, text=label_text,
+                      fill=self.label_color, font=label_font)
+        c.create_text(x, value_y, anchor=anchor, text=value_text,
+                      fill=self.value_color, font=value_font)
+        if unit_text:
+            c.create_text(x, unit_y, anchor=anchor, text=unit_text,
+                          fill=self.unit_color, font=unit_font)
+        if secondary_text:
+            c.create_text(x, secondary_y, anchor="s", text=secondary_text,
+                          fill=self.secondary_text_color, font=secondary_font)
 '''
