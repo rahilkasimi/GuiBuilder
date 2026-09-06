@@ -981,11 +981,11 @@ class MainApplication:
         self.root = root
         self.root.title("My Application")
 
-        self.label_1 = tk.Label(root, text="Hello")
-        self.label_1.place(x=40, y=40, width=120, height=30)
+        self._elem_1 = tk.Label(root, text="Hello")
+        self._elem_1.place(x=40, y=40, width=120, height=30)
 
-        self.button_1 = tk.Button(root, text="Click Me")
-        self.button_1.place(x=40, y=90, width=100, height=34)
+        self._elem_2 = tk.Button(root, text="Click Me")
+        self._elem_2.place(x=40, y=90, width=100, height=34)
 
 
 if __name__ == "__main__":
